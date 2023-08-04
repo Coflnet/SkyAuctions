@@ -1,6 +1,6 @@
 using System.Threading;
 using System.Threading.Tasks;
-using Coflnet.Sky.Base.Models;
+using Coflnet.Sky.Auctions.Models;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -8,24 +8,27 @@ using Confluent.Kafka;
 using Microsoft.Extensions.Configuration;
 using System.Linq;
 using Microsoft.Extensions.Logging;
-using Coflnet.Sky.Base.Controllers;
+using Coflnet.Sky.Auctions.Controllers;
 using Coflnet.Sky.Core;
+using System;
 
-namespace Coflnet.Sky.Base.Services;
+namespace Coflnet.Sky.Auctions.Services;
 
-public class BaseBackgroundService : BackgroundService
+public class SellsCollector : BackgroundService
 {
     private IServiceScopeFactory scopeFactory;
     private IConfiguration config;
-    private ILogger<BaseBackgroundService> logger;
+    private ILogger<SellsCollector> logger;
+    private ScyllaService scyllaService;
     private Prometheus.Counter consumeCount = Prometheus.Metrics.CreateCounter("sky_base_conume", "How many messages were consumed");
 
-    public BaseBackgroundService(
-        IServiceScopeFactory scopeFactory, IConfiguration config, ILogger<BaseBackgroundService> logger)
+    public SellsCollector(
+        IServiceScopeFactory scopeFactory, IConfiguration config, ILogger<SellsCollector> logger, ScyllaService scyllaService)
     {
         this.scopeFactory = scopeFactory;
         this.config = config;
         this.logger = logger;
+        this.scyllaService = scyllaService;
     }
     /// <summary>
     /// Called by asp.net on startup
@@ -34,22 +37,45 @@ public class BaseBackgroundService : BackgroundService
     /// <returns></returns>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        using var scope = scopeFactory.CreateScope();
-        var context = scope.ServiceProvider.GetRequiredService<BaseDbContext>();
-        // make sure all migrations are applied
-        await context.Database.MigrateAsync();
-
-        var flipCons = Coflnet.Kafka.KafkaConsumer.ConsumeBatch<LowPricedAuction>(config, config["TOPICS:LOW_PRICED"], async batch =>
+        await scyllaService.Create();
+        for (int i = 0; i < 8000; i++)
         {
-            var service = GetService();
-            foreach (var lp in batch)
+            var batchSize = 1000;
+            using var scope = scopeFactory.CreateScope();
+            using var context = new HypixelContext();
+            var hadMore = true;
+            var offset = 0;
+            var maxTime = DateTime.UtcNow.AddDays(-14);
+            var tag = "";
+            Task lastTask = null;
+            while (hadMore)
             {
-                // do something
-            }
-            consumeCount.Inc(batch.Count());
-        }, stoppingToken, "skybase");
+                var batch = await context.Auctions
+                    //.Where(a => a.ItemId == i && a.End < maxTime)
+                    .Where(a => a.Id >= offset && a.ItemId < offset + batchSize)
+                    .Include(a => a.Bids).Include(a => a.Enchantments).Include(a => a.NbtData).Include(a => a.NBTLookup).Include(a => a.CoopMembers)
+                    .Skip(offset).Take(batchSize).AsNoTracking().ToListAsync();
+                offset += batchSize;
+                if (lastTask != null)
+                    await lastTask;
+                hadMore = batch.Count > 0;
 
-        await Task.WhenAll(flipCons);
+                if (!hadMore)
+                    break;
+                lastTask = scyllaService.InsertAuctions(batch);
+                tag = batch.LastOrDefault()?.Tag;
+                Console.Write($"\rItem {i} Finished {offset} {tag} {batch.Last().End}");
+            }
+            logger.LogInformation($"Finished {i} {tag}");
+        }
+        await Coflnet.Kafka.KafkaConsumer.ConsumeBatch<SaveAuction>(
+                    config,
+                    config["TOPICS:SOLD_AUCTION"],
+                    scyllaService.InsertAuctions,
+                    stoppingToken,
+                    "sky-auctions",
+                    100
+        );
     }
 
     private BaseService GetService()

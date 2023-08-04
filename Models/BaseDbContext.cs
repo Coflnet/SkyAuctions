@@ -1,6 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 
-namespace Coflnet.Sky.Base.Models;
+namespace Coflnet.Sky.Auctions.Models;
 /// <summary>
 /// <see cref="DbContext"/> For flip tracking
 /// </summary>

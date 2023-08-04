@@ -1,15 +1,15 @@
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
-using Coflnet.Sky.Base.Models;
+using Coflnet.Sky.Auctions.Models;
 using System;
 using System.Linq;
 using Microsoft.EntityFrameworkCore;
 using System.Collections;
 using System.Collections.Generic;
-using Coflnet.Sky.Base.Services;
+using Coflnet.Sky.Auctions.Services;
 
-namespace Coflnet.Sky.Base.Controllers;
+namespace Coflnet.Sky.Auctions.Controllers;
 
 /// <summary>
 /// Main Controller handling tracking

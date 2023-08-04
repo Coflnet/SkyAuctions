@@ -1,7 +1,7 @@
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Hosting;
 
-namespace Coflnet.Sky.Base;
+namespace Coflnet.Sky.Auctions;
 public class Program
 {
     public static void Main(string[] args)

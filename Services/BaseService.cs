@@ -1,10 +1,10 @@
 using System.Threading.Tasks;
-using Coflnet.Sky.Base.Models;
+using Coflnet.Sky.Auctions.Models;
 using System;
 using System.Linq;
 using Microsoft.EntityFrameworkCore;
 
-namespace Coflnet.Sky.Base.Services;
+namespace Coflnet.Sky.Auctions.Services;
 public class BaseService
 {
     private BaseDbContext db;

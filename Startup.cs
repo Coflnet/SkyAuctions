@@ -1,8 +1,13 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Security.Authentication;
+using System.Security.Cryptography.X509Certificates;
+using Cassandra;
 using System.IO;
 using System.Reflection;
-using Coflnet.Sky.Base.Models;
-using Coflnet.Sky.Base.Services;
+using Coflnet.Sky.Auctions.Models;
+using Coflnet.Sky.Auctions.Services;
 using Coflnet.Sky.Core;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -13,7 +18,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.OpenApi.Models;
 using Prometheus;
 
-namespace Coflnet.Sky.Base;
+namespace Coflnet.Sky.Auctions;
 public class Startup
 {
     public Startup(IConfiguration configuration)
@@ -29,7 +34,7 @@ public class Startup
         services.AddControllers();
         services.AddSwaggerGen(c =>
         {
-            c.SwaggerDoc("v1", new OpenApiInfo { Title = "SkyBase", Version = "v1" });
+            c.SwaggerDoc("v1", new OpenApiInfo { Title = "SkyAuctions", Version = "v1" });
             // Set the comments path for the Swagger JSON and UI.
             var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";
             var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
@@ -49,9 +54,39 @@ public class Startup
                 .EnableSensitiveDataLogging() // <-- These two calls are optional but help
                 .EnableDetailedErrors()       // <-- with debugging (remove for production).
         );
-        services.AddHostedService<BaseBackgroundService>();
+        services.AddHostedService<SellsCollector>();
         services.AddJaeger(Configuration);
         services.AddTransient<BaseService>();
+        services.AddSingleton<ISession>(p =>
+        {
+            Console.WriteLine("Connecting to Cassandra...");
+            var builder = Cluster.Builder().AddContactPoints(Configuration["CASSANDRA:HOSTS"].Split(","))
+                .WithCredentials(Configuration["CASSANDRA:USER"], Configuration["CASSANDRA:PASSWORD"])
+                .WithDefaultKeyspace(Configuration["CASSANDRA:KEYSPACE"]);
+
+            var certificatePaths = Configuration["CASSANDRA:X509Certificate_PATHS"];
+            if (!string.IsNullOrEmpty(certificatePaths))
+            {
+                var sslOptions = new SSLOptions(
+                    // TLSv1.2 is required as of October 9, 2019.
+                    // See: https://www.instaclustr.com/removing-support-for-outdated-encryption-mechanisms/
+                    SslProtocols.Tls12,
+                    false,
+                    // Custom validator avoids need to trust the CA system-wide.
+                    (sender, certificate, chain, errors) => true
+                ).SetCertificateCollection(new(certificatePaths.Split(',').Select(p => new X509Certificate2(p)).ToArray()));
+                builder.WithSSL();
+            }
+            var cluster = builder.Build();
+            cluster.ConnectAndCreateDefaultKeyspaceIfNotExists(new Dictionary<string, string>()
+            {
+                            {"class", Configuration["CASSANDRA:REPLICATION_CLASS"]},
+                            {"replication_factor", Configuration["CASSANDRA:REPLICATION_FACTOR"]}
+            });
+            Console.WriteLine("Connected to Cassandra");
+            return cluster.Connect();
+        });
+        services.AddSingleton<ScyllaService>();
         services.AddResponseCaching();
         services.AddResponseCompression();
     }
@@ -66,7 +101,7 @@ public class Startup
         app.UseSwagger();
         app.UseSwaggerUI(c =>
         {
-            c.SwaggerEndpoint("/swagger/v1/swagger.json", "SkyBase v1");
+            c.SwaggerEndpoint("/swagger/v1/swagger.json", "SkyAuctions v1");
             c.RoutePrefix = "api";
         });
 
