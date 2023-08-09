@@ -4,6 +4,9 @@ using Coflnet.Sky.Core;
 using Newtonsoft.Json;
 
 namespace Coflnet.Sky.Auctions;
+/// <summary>
+/// Auctions stored in cassandra
+/// </summary>
 public class CassandraAuction : ICassandraItem
 {
     [Cassandra.Mapping.Attributes.SecondaryIndex()]
