@@ -8,6 +8,7 @@ using Microsoft.EntityFrameworkCore;
 using System.Collections;
 using System.Collections.Generic;
 using Coflnet.Sky.Auctions.Services;
+using Coflnet.Sky.Core;
 
 namespace Coflnet.Sky.Auctions.Controllers;
 
@@ -15,31 +16,29 @@ namespace Coflnet.Sky.Auctions.Controllers;
 /// Main Controller handling tracking
 /// </summary>
 [ApiController]
-[Route("[controller]")]
-public class BaseController : ControllerBase
+[Route("/api/[controller]")]
+public class AuctionController : ControllerBase
 {
-    private readonly BaseService service;
+    private readonly ScyllaService scyllaService;
 
     /// <summary>
-    /// Creates a new instance of <see cref="BaseController"/>
+    /// Creates a new instance of <see cref="AuctionController"/>
     /// </summary>
     /// <param name="service"></param>
-    public BaseController(BaseService service)
+    public AuctionController(ScyllaService service)
     {
-        this.service = service;
+        this.scyllaService = service;
     }
 
     /// <summary>
     /// Tracks a flip
     /// </summary>
-    /// <param name="flip"></param>
-    /// <param name="AuctionId"></param>
+    /// <param name="uuid"></param>
     /// <returns></returns>
     [HttpPost]
-    [Route("flip/{AuctionId}")]
-    public async Task<Flip> TrackFlip([FromBody] Flip flip, string AuctionId)
+    [Route("{uuid}")]
+    public async Task<SaveAuction> TrackFlip(string uuid)
     {
-        await service.AddFlip(flip);
-        return flip;
+        return await scyllaService.GetAuction(Guid.Parse(uuid));
     }
 }

@@ -31,7 +31,7 @@ public class Startup
     // This method gets called by the runtime. Use this method to add services to the container.
     public void ConfigureServices(IServiceCollection services)
     {
-        services.AddControllers();
+        services.AddControllers().AddNewtonsoftJson();
         services.AddSwaggerGen(c =>
         {
             c.SwaggerDoc("v1", new OpenApiInfo { Title = "SkyAuctions", Version = "v1" });
@@ -67,15 +67,17 @@ public class Startup
             var certificatePaths = Configuration["CASSANDRA:X509Certificate_PATHS"];
             if (!string.IsNullOrEmpty(certificatePaths))
             {
+                var password = Configuration["CASSANDRA:X509Certificate_PASSWORD"] ?? throw new InvalidOperationException("CASSANDRA:X509Certificate_PASSWORD must be set if CASSANDRA:X509Certificate_PATHS is set.");
+                var certificateValidator = new CustomRootCaCertificateValidator(new X509Certificate2(certificatePaths.Split(',')[0], password));
                 var sslOptions = new SSLOptions(
                     // TLSv1.2 is required as of October 9, 2019.
                     // See: https://www.instaclustr.com/removing-support-for-outdated-encryption-mechanisms/
                     SslProtocols.Tls12,
                     false,
                     // Custom validator avoids need to trust the CA system-wide.
-                    (sender, certificate, chain, errors) => true
-                ).SetCertificateCollection(new(certificatePaths.Split(',').Select(p => new X509Certificate2(p)).ToArray()));
-                builder.WithSSL();
+                    (sender, certificate, chain, errors) => certificateValidator.Validate(certificate, chain, errors)
+                ).SetCertificateCollection(new(certificatePaths.Split(',').Select(p => new X509Certificate2(p, password)).ToArray()));
+                builder.WithSSL(sslOptions);
             }
             var cluster = builder.Build();
             cluster.ConnectAndCreateDefaultKeyspaceIfNotExists(new Dictionary<string, string>()

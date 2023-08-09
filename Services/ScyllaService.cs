@@ -41,11 +41,41 @@ public class ScyllaService
 
     public async Task InsertAuction(SaveAuction auction)
     {
+        var auctionUuid = Guid.Parse(auction.Uuid);
+        if (auction.AuctioneerId == null && auction.Tag == null && auction.HighestBidAmount == 0)
+            return;
+        auction = new SaveAuction(auction);
+        var root = auction.NbtData?.Root() ?? new fNbt.NbtCompound("i");
+        if (auction.AnvilUses > 0)
+        {
+            root.Add(new fNbt.NbtInt("anvil_uses", auction.AnvilUses));
+        }
+        if (auction.Reforge != ItemReferences.Reforge.None)
+        {
+            root.Add(new fNbt.NbtString("modifier", auction.Reforge.ToString()));
+        }
+        auction.NbtData = new() { data = NBT.Bytes(root) };
+        auction.SetFlattenedNbt(NBT.FlattenNbtData(auction.NbtData.Data));
         var colorString = auction.FlatenedNBT.GetValueOrDefault("color");
         int? color = null;
         if (colorString != null)
             color = (int)NBT.GetColor(colorString);
         var bids = auction.Bids?.Select(b => ToCassandra(b, Guid.Parse(auction.Uuid))).ToList();
+        var enchants = auction.Enchantments.ToDictionary(e => e.Type.ToString(), e => (int)e.Level);
+        var highestBidder = auction.Bids.Count == 0 ? Guid.Empty : Guid.Parse(auction.Bids.OrderByDescending(b => b.Amount).First().Bidder);
+        var itemUid = long.Parse(auction.FlatenedNBT.GetValueOrDefault("uid", "0"), System.Globalization.NumberStyles.HexNumber);
+        var itemUuid = Guid.Parse(auction.FlatenedNBT.GetValueOrDefault("uuid") ?? "00000000-0000-0000-0000-" + auction.FlatenedNBT.GetValueOrDefault("uid", "000000000000"));
+
+
+        var extraAttributesJson = JsonConvert.SerializeObject(auction.NbtData?.Data);
+        // check if exists
+        var existing = (await AuctionsTable.Where(a => a.Uuid == auctionUuid).Select(a => a.ItemBytes).ExecuteAsync()).FirstOrDefault();
+        if (existing?.SequenceEqual(auction.NbtData?.data) ?? false)
+        {
+            if (Random.Shared.NextDouble() < 0.01)
+                Console.WriteLine("Already exists");
+            return;
+        }
         Parallel.ForEachAsync(bids, async (b, t) =>
         {
             try
@@ -57,14 +87,10 @@ public class ScyllaService
                 Logger.LogError(e, "Failed to insert bid\n" + JsonConvert.SerializeObject(b));
             }
         });
-        var enchants = auction.Enchantments.ToDictionary(e => e.Type.ToString(), e => (int)e.Level);
-        var highestBidder = auction.Bids.Count == 0 ? Guid.Empty : Guid.Parse(auction.Bids.OrderByDescending(b => b.Amount).First().Bidder);
-        var itemUid = long.Parse(auction.FlatenedNBT.GetValueOrDefault("uid", "0"), System.Globalization.NumberStyles.HexNumber);
-        var itemUuid = Guid.Parse(auction.FlatenedNBT.GetValueOrDefault("uuid") ?? "00000000-0000-0000-0000-" + auction.FlatenedNBT.GetValueOrDefault("uid", "000000000000"));
-        var ExtraAttributesJson = JsonConvert.SerializeObject(auction.NbtData?.Data);
         await AuctionsTable.Insert(new CassandraAuction()
         {
-            Auctioneer = Guid.Parse(auction.AuctioneerId),
+            Uuid = auctionUuid,
+            Auctioneer = auctionUuid,
             Bin = auction.Bin,
             Category = auction.Category.ToString(),
             Coop = auction.Coop,
@@ -77,16 +103,15 @@ public class ScyllaService
             Tag = auction.Tag ?? "unknown",
             Tier = auction.Tier.ToString(),
             StartingBid = auction.StartingBid,
-            ExtraAttributesJson = ExtraAttributesJson,
             ItemUid = itemUid,
             ItemId = itemUuid,
-            Uuid = Guid.Parse(auction.Uuid),
             Start = auction.Start,
             ItemBytes = auction.NbtData?.data?.ToArray(),
             IsSold = auction.HighestBidAmount > 0,
             ItemCreatedAt = auction.ItemCreatedAt,
             ProfileId = Guid.Parse(auction.ProfileId ?? auction.AuctioneerId),
             NbtLookup = auction.FlatenedNBT,
+            Count = auction.Count,
             Bids = bids
         }).ExecuteAsync();
 
@@ -132,6 +157,11 @@ public class ScyllaService
         var auction = result.FirstOrDefault();
         if (auction == null)
             return null;
+        return CassandraToOld(auction);
+    }
+
+    private static SaveAuction CassandraToOld(CassandraAuction auction)
+    {
         return new SaveAuction()
         {
             AuctioneerId = auction.Auctioneer.ToString(),
@@ -148,6 +178,10 @@ public class ScyllaService
             ItemCreatedAt = auction.ItemCreatedAt,
             ProfileId = auction.ProfileId.ToString(),
             Uuid = auction.Uuid.ToString(),
+            Count = auction.Count,
+
+            AnvilUses = (short)int.Parse(auction.NbtLookup.GetValueOrDefault("anvil_uses", "0")),
+            Reforge = auction.NbtLookup.GetValueOrDefault("modifier") == null ? ItemReferences.Reforge.None : (ItemReferences.Reforge)Enum.Parse(typeof(ItemReferences.Reforge), auction.NbtLookup.GetValueOrDefault("modifier")),
             Bids = auction.Bids.Select(b => new SaveBids()
             {
                 Amount = b.Amount,
@@ -198,38 +232,7 @@ public class ScyllaService
 
     private static IEnumerable<SaveAuction> ToOldFormat(IEnumerable<CassandraAuction> result)
     {
-        return result.Select(a => new SaveAuction()
-        {
-            AuctioneerId = a.Auctioneer.ToString(),
-            Bin = a.Bin,
-            Category = (Category)Enum.Parse(typeof(Category), a.Category),
-            Coop = a.Coop,
-            End = a.End,
-            HighestBidAmount = a.HighestBidAmount,
-            ItemName = a.ItemName,
-            Tag = a.Tag,
-            Tier = (Tier)Enum.Parse(typeof(Tier), a.Tier),
-            StartingBid = a.StartingBid,
-            FlatenedNBT = a.NbtLookup,
-            ItemCreatedAt = a.ItemCreatedAt,
-            ProfileId = a.ProfileId.ToString(),
-            Uuid = a.Uuid.ToString(),
-            Bids = a.Bids.Select(b => new SaveBids()
-            {
-                Amount = b.Amount,
-                AuctionId = b.AuctionUuid.ToString(),
-                Bidder = b.BidderUuid.ToString(),
-                Timestamp = b.Timestamp,
-                ProfileId = b.ProfileId.ToString(),
-            }).ToList(),
-            Enchantments = a.Enchantments.Select(e => new Enchantment()
-            {
-                Level = (byte)e.Value,
-                Type = (EnchantmentType)Enum.Parse(typeof(EnchantmentType), e.Key),
-            }).ToList(),
-            UId = a.ItemUid,
-            Start = a.Start,
-        });
+        return result.Select(CassandraToOld);
     }
 
     private Table<CassandraBid> GetBidsTable()

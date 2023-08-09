@@ -65,5 +65,6 @@ public class CassandraAuction : ICassandraItem
                 SerialisedBids = MessagePack.MessagePackSerializer.Serialize<IEnumerable<CassandraBid>>(value);
         }
     }
+    public int Count { get; set; }
     public int? Color { get; set; }
 }

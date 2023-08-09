@@ -38,36 +38,36 @@ public class SellsCollector : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await scyllaService.Create();
-        for (int i = 0; i < 8000; i++)
+        var batchSize = 1000;
+        using var scope = scopeFactory.CreateScope();
+        using var context = new HypixelContext();
+        var hadMore = true;
+        var offset = 0;//33571000;
+        var maxTime = DateTime.UtcNow.AddDays(-14);
+        var tag = "";
+        Task lastTask = null;
+        while (batchSize < 600_000_000)
         {
-            var batchSize = 1000;
-            using var scope = scopeFactory.CreateScope();
-            using var context = new HypixelContext();
-            var hadMore = true;
-            var offset = 0;
-            var maxTime = DateTime.UtcNow.AddDays(-14);
-            var tag = "";
-            Task lastTask = null;
-            while (hadMore)
-            {
-                var batch = await context.Auctions
-                    //.Where(a => a.ItemId == i && a.End < maxTime)
-                    .Where(a => a.Id >= offset && a.ItemId < offset + batchSize)
-                    .Include(a => a.Bids).Include(a => a.Enchantments).Include(a => a.NbtData).Include(a => a.NBTLookup).Include(a => a.CoopMembers)
-                    .Skip(offset).Take(batchSize).AsNoTracking().ToListAsync();
-                offset += batchSize;
-                if (lastTask != null)
-                    await lastTask;
-                hadMore = batch.Count > 0;
+            var batch = await context.Auctions
+                //.Where(a => a.ItemId == i && a.End < maxTime)
+                .Where(a => a.Id >= offset && a.Id < offset + batchSize)
+                .Include(a => a.Bids).Include(a => a.Enchantments).Include(a => a.NbtData).Include(a => a.NBTLookup).Include(a => a.CoopMembers)
+                //.Skip(offset).Take(batchSize)
+                .AsNoTracking().ToListAsync();
+            offset += batchSize;
+            if (lastTask != null)
+                await lastTask;
+            hadMore = batch.Count > 0;
+            await Task.Delay(50);
 
-                if (!hadMore)
-                    break;
-                lastTask = scyllaService.InsertAuctions(batch);
-                tag = batch.LastOrDefault()?.Tag;
-                Console.Write($"\rItem {i} Finished {offset} {tag} {batch.Last().End}");
-            }
-            logger.LogInformation($"Finished {i} {tag}");
+            if (!hadMore)
+                continue;
+            lastTask = scyllaService.InsertAuctions(batch);
+            tag = batch.LastOrDefault()?.Tag;
+            Console.Write($"\rFinished {offset} {tag} {batch.Last().End}");
         }
+        logger.LogInformation($"Finished completely");
+
         await Coflnet.Kafka.KafkaConsumer.ConsumeBatch<SaveAuction>(
                     config,
                     config["TOPICS:SOLD_AUCTION"],
