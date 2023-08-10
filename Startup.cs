@@ -80,6 +80,13 @@ public class Startup
                 builder.WithSSL(sslOptions);
             }
             var cluster = builder.Build();
+            Console.WriteLine("Connecting to servers " + Configuration["CASSANDRA:HOSTS"]);
+            Console.WriteLine("Using keyspace " + Configuration["CASSANDRA:KEYSPACE"]);
+            Console.WriteLine("Using replication class " + Configuration["CASSANDRA:REPLICATION_CLASS"]);
+            Console.WriteLine("Using replication factor " + Configuration["CASSANDRA:REPLICATION_FACTOR"]);
+            Console.WriteLine("Using user " + Configuration["CASSANDRA:USER"]);
+            Console.WriteLine("Using password " + Configuration["CASSANDRA:PASSWORD"].Truncate(2) + "...");
+            Console.WriteLine("Using certificate paths " + Configuration["CASSANDRA:X509Certificate_PATHS"]);
             cluster.ConnectAndCreateDefaultKeyspaceIfNotExists(new Dictionary<string, string>()
             {
                             {"class", Configuration["CASSANDRA:REPLICATION_CLASS"]},
