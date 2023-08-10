@@ -87,6 +87,7 @@ public class Startup
             Console.WriteLine("Using user " + Configuration["CASSANDRA:USER"]);
             Console.WriteLine("Using password " + Configuration["CASSANDRA:PASSWORD"].Truncate(2) + "...");
             Console.WriteLine("Using certificate paths " + Configuration["CASSANDRA:X509Certificate_PATHS"]);
+            Console.WriteLine("Using certificate password " + Configuration["CASSANDRA:X509Certificate_PASSWORD"].Truncate(2) + "...");
             cluster.ConnectAndCreateDefaultKeyspaceIfNotExists(new Dictionary<string, string>()
             {
                             {"class", Configuration["CASSANDRA:REPLICATION_CLASS"]},
