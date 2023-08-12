@@ -114,8 +114,7 @@ public class ScyllaService
             NbtLookup = auction.FlatenedNBT,
             Count = auction.Count,
             Bids = bids
-        });
-        statement.SetConsistencyLevel(ConsistencyLevel.LocalQuorum);
+        }).SetConsistencyLevel(ConsistencyLevel.LocalQuorum);
 
         await statement.ExecuteAsync().ConfigureAwait(false);
         await bidsTask;
