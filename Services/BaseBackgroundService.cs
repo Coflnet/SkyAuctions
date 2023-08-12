@@ -11,6 +11,7 @@ using Microsoft.Extensions.Logging;
 using Coflnet.Sky.Auctions.Controllers;
 using Coflnet.Sky.Core;
 using System;
+using System.Threading.Channels;
 
 namespace Coflnet.Sky.Auctions.Services;
 
@@ -46,6 +47,26 @@ public class SellsCollector : BackgroundService
         var maxTime = DateTime.UtcNow.AddDays(-14);
         var tag = "";
         Task lastTask = null;
+        var channel = Channel.CreateUnbounded<Func<Task>>();
+        for (int i = 0; i < 50; i++)
+        {
+            _ = Task.Run(async () =>
+            {
+                while (await channel.Reader.WaitToReadAsync())
+                {
+                    while (channel.Reader.TryRead(out var action))
+                    {
+                        try { await action(); }
+                        catch (Exception e)
+                        {
+                            logger.LogError(e, "Error while executing action");
+                            await Task.Delay(1000);
+                            channel.Writer.TryWrite(action);
+                        }
+                    }
+                }
+            });
+        }
         while (batchSize < 600_000_000)
         {
             using var scope = scopeFactory.CreateScope();
@@ -58,18 +79,17 @@ public class SellsCollector : BackgroundService
                 //.Skip(offset).Take(batchSize)
                 .AsNoTracking().ToListAsync();
             offset += batchSize;
-            if (lastTask != null)
-            {
-                logger.LogDebug($"Waiting for last cassandra insert task");
-                await lastTask;
-                await CacheService.Instance.SaveInRedis(RedisProgressKey, offset - batchSize * 2);
-            }
             hadMore = batch.Count > 0;
-            await Task.Delay(50);
 
             if (!hadMore)
                 continue;
-            lastTask = scyllaService.InsertAuctions(batch);
+            foreach (var auction in batch)
+            {
+                channel.Writer.TryWrite(() => scyllaService.InsertAuction(auction));
+                if(channel.Reader.Count > 1000)
+                    await Task.Delay(20);
+            }
+            channel.Writer.TryWrite(() => CacheService.Instance.SaveInRedis(RedisProgressKey, offset - batchSize * 2));
             tag = batch.LastOrDefault()?.Tag;
             Console.Write($"\rFinished {offset} {tag} {batch.Last().End}");
         }

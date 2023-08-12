@@ -66,11 +66,9 @@ public class ScyllaService
         var itemUid = long.Parse(auction.FlatenedNBT.GetValueOrDefault("uid", "0"), System.Globalization.NumberStyles.HexNumber);
         var itemUuid = Guid.Parse(auction.FlatenedNBT.GetValueOrDefault("uuid") ?? "00000000-0000-0000-0000-" + auction.FlatenedNBT.GetValueOrDefault("uid", "000000000000"));
 
-
-        var extraAttributesJson = JsonConvert.SerializeObject(auction.NbtData?.Data);
         // check if exists
-        var existing = (await AuctionsTable.Where(a => a.Uuid == auctionUuid).Select(a => a.ItemBytes).ExecuteAsync()).FirstOrDefault();
-        if (existing?.SequenceEqual(auction.NbtData?.data) ?? false)
+        var existing = (await AuctionsTable.Where(a => a.Uuid == auctionUuid).Select(a => a.ItemName).ExecuteAsync()).FirstOrDefault();
+        if (existing != null && existing == auction.ItemName)
         {
             if (Random.Shared.NextDouble() < 0.01)
                 Console.WriteLine("Already exists");
