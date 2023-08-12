@@ -48,7 +48,7 @@ public class SellsCollector : BackgroundService
         var tag = "";
         Task lastTask = null;
         var channel = Channel.CreateUnbounded<Func<Task>>();
-        for (int i = 0; i < 50; i++)
+        for (int i = 0; i < 200; i++)
         {
             _ = Task.Run(async () =>
             {
@@ -86,12 +86,16 @@ public class SellsCollector : BackgroundService
             foreach (var auction in batch)
             {
                 channel.Writer.TryWrite(() => scyllaService.InsertAuction(auction));
-                if(channel.Reader.Count > 1000)
+                if (channel.Reader.Count > 1000)
                     await Task.Delay(20);
             }
-            channel.Writer.TryWrite(() => CacheService.Instance.SaveInRedis(RedisProgressKey, offset - batchSize * 2));
+            channel.Writer.TryWrite(async () =>
+            {
+                var toStore = offset - batchSize * 2;
+                await CacheService.Instance.SaveInRedis(RedisProgressKey, toStore);
+                logger.LogInformation($"Reached offset {offset} {tag} {batch.Last().End}");
+            });
             tag = batch.LastOrDefault()?.Tag;
-            Console.Write($"\rFinished {offset} {tag} {batch.Last().End}");
         }
         logger.LogInformation($"Finished completely");
 
