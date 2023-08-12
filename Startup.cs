@@ -17,6 +17,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.OpenApi.Models;
 using Prometheus;
+using System.Security.Cryptography;
 
 namespace Coflnet.Sky.Auctions;
 public class Startup
@@ -71,6 +72,7 @@ public class Startup
             Console.WriteLine("Using user " + Configuration["CASSANDRA:USER"]);
             Console.WriteLine("Using password " + Configuration["CASSANDRA:PASSWORD"].Truncate(2) + "...");
             Console.WriteLine("Using certificate paths " + Configuration["CASSANDRA:X509Certificate_PATHS"]);
+            Console.WriteLine("Hash of certificate file " + SHA256CheckSum(Configuration["CASSANDRA:X509Certificate_PATHS"]));
             Console.WriteLine("Using certificate password " + Configuration["CASSANDRA:X509Certificate_PASSWORD"].Truncate(2) + "...");
             var certificatePaths = Configuration["CASSANDRA:X509Certificate_PATHS"];
             var validationCertificatePath = Configuration["CASSANDRA:X509Certificate_VALIDATION_PATH"];
@@ -102,6 +104,20 @@ public class Startup
         services.AddSingleton<ScyllaService>();
         services.AddResponseCaching();
         services.AddResponseCompression();
+    }
+
+    /// <summary>
+    /// https://stackoverflow.com/a/51966515
+    /// </summary>
+    /// <param name="filePath"></param>
+    /// <returns></returns>
+    public string SHA256CheckSum(string filePath)
+    {
+        using (SHA256 SHA256 = SHA256Managed.Create())
+        {
+            using (FileStream fileStream = File.OpenRead(filePath))
+                return Convert.ToBase64String(SHA256.ComputeHash(fileStream));
+        }
     }
 
     // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
