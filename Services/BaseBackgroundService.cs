@@ -48,7 +48,7 @@ public class SellsCollector : BackgroundService
         var tag = "";
         Task lastTask = null;
         var channel = Channel.CreateUnbounded<Func<Task>>();
-        for (int i = 0; i < 200; i++)
+        for (int i = 0; i < 500; i++)
         {
             _ = Task.Run(async () =>
             {
