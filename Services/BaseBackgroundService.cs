@@ -39,15 +39,16 @@ public class SellsCollector : BackgroundService
     {
         await scyllaService.Create();
         var batchSize = 1000;
-        using var scope = scopeFactory.CreateScope();
-        using var context = new HypixelContext();
         var hadMore = true;
-        var offset = 0;//33571000;
+        var offset = 0;
         var maxTime = DateTime.UtcNow.AddDays(-14);
         var tag = "";
         Task lastTask = null;
         while (batchSize < 600_000_000)
         {
+            using var scope = scopeFactory.CreateScope();
+            using var context = new HypixelContext();
+            logger.LogDebug($"Loading batch {offset} from db");
             var batch = await context.Auctions
                 //.Where(a => a.ItemId == i && a.End < maxTime)
                 .Where(a => a.Id >= offset && a.Id < offset + batchSize)
@@ -56,7 +57,10 @@ public class SellsCollector : BackgroundService
                 .AsNoTracking().ToListAsync();
             offset += batchSize;
             if (lastTask != null)
+            {
+                logger.LogDebug($"Waiting for last cassandra insert task");
                 await lastTask;
+            }
             hadMore = batch.Count > 0;
             await Task.Delay(50);
 
