@@ -48,7 +48,7 @@ public class SellsCollector : BackgroundService
         var maxTime = DateTime.UtcNow.AddDays(-14);
         var tag = "";
         var channel = Channel.CreateUnbounded<Func<Task>>();
-        for (int i = 0; i < 200; i++)
+        for (int i = 0; i < 150; i++)
         {
             _ = Task.Run(async () =>
             {
@@ -68,7 +68,7 @@ public class SellsCollector : BackgroundService
                 }
             });
         }
-        while (batchSize < 600_000_000)
+        while (currentOffset < 600_000_000)
         {
             using var scope = scopeFactory.CreateScope();
             using var context = new HypixelContext();
