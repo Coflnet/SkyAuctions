@@ -73,10 +73,11 @@ public class Startup
             Console.WriteLine("Using replication factor " + Configuration["CASSANDRA:REPLICATION_FACTOR"]);
             Console.WriteLine("Using user " + Configuration["CASSANDRA:USER"]);
             Console.WriteLine("Using password " + Configuration["CASSANDRA:PASSWORD"].Truncate(2) + "...");
-            Console.WriteLine("Using certificate paths " + Configuration["CASSANDRA:X509Certificate_PATHS"]);
-            Console.WriteLine("Hash of certificate file " + SHA256CheckSum(Configuration["CASSANDRA:X509Certificate_PATHS"]));
-            Console.WriteLine("Using certificate password " + Configuration["CASSANDRA:X509Certificate_PASSWORD"].Truncate(2) + "...");
             var certificatePaths = Configuration["CASSANDRA:X509Certificate_PATHS"];
+            Console.WriteLine("Using certificate paths " + certificatePaths);
+            if (!string.IsNullOrEmpty(certificatePaths))
+                Console.WriteLine("Hash of certificate file " + SHA256CheckSum(certificatePaths));
+            Console.WriteLine("Using certificate password " + Configuration["CASSANDRA:X509Certificate_PASSWORD"].Truncate(2) + "...");
             var validationCertificatePath = Configuration["CASSANDRA:X509Certificate_VALIDATION_PATH"];
             if (!string.IsNullOrEmpty(certificatePaths))
             {

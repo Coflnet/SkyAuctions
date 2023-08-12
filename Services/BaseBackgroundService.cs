@@ -112,7 +112,8 @@ public class SellsCollector : BackgroundService
 
     public static async Task SetOffset(int toStore)
     {
-        currentOffset = toStore;
+        if (Math.Abs(toStore - currentOffset) > 10000)
+            currentOffset = toStore;
         await CacheService.Instance.SaveInRedis(RedisProgressKey, toStore);
     }
 
