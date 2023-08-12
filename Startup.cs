@@ -95,13 +95,13 @@ public class Startup
                 builder.WithSSL(sslOptions);
             }
             var cluster = builder.Build();
-            cluster.ConnectAndCreateDefaultKeyspaceIfNotExists(new Dictionary<string, string>()
+            var session = cluster.ConnectAndCreateDefaultKeyspaceIfNotExists(new Dictionary<string, string>()
             {
                             {"class", Configuration["CASSANDRA:REPLICATION_CLASS"]},
                             {"replication_factor", Configuration["CASSANDRA:REPLICATION_FACTOR"]}
             });
             Console.WriteLine("Connected to Cassandra");
-            return cluster.Connect();
+            return session;
         });
         services.AddSingleton<ScyllaService>();
         services.AddResponseCaching();

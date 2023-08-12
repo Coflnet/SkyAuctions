@@ -41,4 +41,10 @@ public class AuctionController : ControllerBase
     {
         return await scyllaService.GetAuction(Guid.Parse(uuid));
     }
+    [HttpPost]
+    [Route("/import/offset")]
+    public async Task SetOffset(int id)
+    {
+        await SellsCollector.SetOffset(id);
+    }
 }

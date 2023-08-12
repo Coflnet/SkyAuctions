@@ -65,30 +65,32 @@ public class ScyllaService
         var highestBidder = auction.Bids.Count == 0 ? Guid.Empty : Guid.Parse(auction.Bids.OrderByDescending(b => b.Amount).First().Bidder);
         var itemUid = long.Parse(auction.FlatenedNBT.GetValueOrDefault("uid", "0"), System.Globalization.NumberStyles.HexNumber);
         var itemUuid = Guid.Parse(auction.FlatenedNBT.GetValueOrDefault("uuid") ?? "00000000-0000-0000-0000-" + auction.FlatenedNBT.GetValueOrDefault("uid", "000000000000"));
-
+        var isSold = auction.HighestBidAmount > 0;
+        var sellerUuid = Guid.Parse(auction.AuctioneerId);
         // check if exists
-        var existing = (await AuctionsTable.Where(a => a.Uuid == auctionUuid).Select(a => a.ItemName).ExecuteAsync()).FirstOrDefault();
-        if (existing != null && existing == auction.ItemName)
+        var existing = (await AuctionsTable.Where(a => a.Tag == auction.Tag && a.IsSold == isSold && a.End == auction.End && a.Uuid == auctionUuid).Select(a => a.Auctioneer).ExecuteAsync()).FirstOrDefault();
+        if (existing != null && sellerUuid == existing)
         {
             if (Random.Shared.NextDouble() < 0.01)
                 Console.WriteLine("Already exists");
             return;
         }
-        Parallel.ForEachAsync(bids, async (b, t) =>
+        var bidsTask = Parallel.ForEachAsync(bids, async (b, t) =>
         {
             try
             {
-                await BidsTable.Insert(b).ExecuteAsync();
+                await BidsTable.Insert(b).ExecuteAsync().ConfigureAwait(false);
             }
             catch (Exception e)
             {
                 Logger.LogError(e, "Failed to insert bid\n" + JsonConvert.SerializeObject(b));
+                throw e;
             }
         });
         await AuctionsTable.Insert(new CassandraAuction()
         {
             Uuid = auctionUuid,
-            Auctioneer = auctionUuid,
+            Auctioneer = sellerUuid,
             Bin = auction.Bin,
             Category = auction.Category.ToString(),
             Coop = auction.Coop,
@@ -105,14 +107,14 @@ public class ScyllaService
             ItemId = itemUuid,
             Start = auction.Start,
             ItemBytes = auction.NbtData?.data?.ToArray(),
-            IsSold = auction.HighestBidAmount > 0,
+            IsSold = isSold,
             ItemCreatedAt = auction.ItemCreatedAt,
             ProfileId = Guid.Parse(auction.ProfileId ?? auction.AuctioneerId),
             NbtLookup = auction.FlatenedNBT,
             Count = auction.Count,
             Bids = bids
         }).ExecuteAsync().ConfigureAwait(false);
-
+        await bidsTask;
     }
 
     private Table<CassandraAuction> GetAuctionsTable()
