@@ -113,7 +113,7 @@ public class ScyllaService
             NbtLookup = auction.FlatenedNBT,
             Count = auction.Count,
             Bids = bids
-        }).ExecuteAsync();
+        }).ExecuteAsync().ConfigureAwait(false);
 
     }
 
