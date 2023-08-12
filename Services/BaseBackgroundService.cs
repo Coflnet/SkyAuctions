@@ -16,6 +16,7 @@ namespace Coflnet.Sky.Auctions.Services;
 
 public class SellsCollector : BackgroundService
 {
+    private const string RedisProgressKey = "lastMigratedAuctionIndex";
     private IServiceScopeFactory scopeFactory;
     private IConfiguration config;
     private ILogger<SellsCollector> logger;
@@ -40,7 +41,8 @@ public class SellsCollector : BackgroundService
         await scyllaService.Create();
         var batchSize = 1000;
         var hadMore = true;
-        var offset = 0;
+        var offset = await CacheService.Instance.GetFromRedis<int>(RedisProgressKey);
+        logger.LogInformation($"Starting at {offset}");
         var maxTime = DateTime.UtcNow.AddDays(-14);
         var tag = "";
         Task lastTask = null;
@@ -69,6 +71,7 @@ public class SellsCollector : BackgroundService
             lastTask = scyllaService.InsertAuctions(batch);
             tag = batch.LastOrDefault()?.Tag;
             Console.Write($"\rFinished {offset} {tag} {batch.Last().End}");
+            await CacheService.Instance.SaveInRedis(RedisProgressKey, offset);
         }
         logger.LogInformation($"Finished completely");
 

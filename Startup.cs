@@ -18,6 +18,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.OpenApi.Models;
 using Prometheus;
 using System.Security.Cryptography;
+using StackExchange.Redis;
 
 namespace Coflnet.Sky.Auctions;
 public class Startup
@@ -58,6 +59,7 @@ public class Startup
         services.AddHostedService<SellsCollector>();
         services.AddJaeger(Configuration);
         services.AddTransient<BaseService>();
+        services.AddSingleton<IConnectionMultiplexer>(provider => ConnectionMultiplexer.Connect(Configuration["REDIS_HOST"]));
         services.AddSingleton<ISession>(p =>
         {
             Console.WriteLine("Connecting to Cassandra...");
