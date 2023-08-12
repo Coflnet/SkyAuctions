@@ -62,6 +62,7 @@ public class SellsCollector : BackgroundService
             {
                 logger.LogDebug($"Waiting for last cassandra insert task");
                 await lastTask;
+                await CacheService.Instance.SaveInRedis(RedisProgressKey, offset - batchSize * 2);
             }
             hadMore = batch.Count > 0;
             await Task.Delay(50);
@@ -71,7 +72,6 @@ public class SellsCollector : BackgroundService
             lastTask = scyllaService.InsertAuctions(batch);
             tag = batch.LastOrDefault()?.Tag;
             Console.Write($"\rFinished {offset} {tag} {batch.Last().End}");
-            await CacheService.Instance.SaveInRedis(RedisProgressKey, offset);
         }
         logger.LogInformation($"Finished completely");
 
