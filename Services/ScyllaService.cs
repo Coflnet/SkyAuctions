@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Cassandra;
 using Cassandra.Data.Linq;
 using Cassandra.Mapping;
 using Coflnet.Sky.Core;
@@ -87,7 +88,7 @@ public class ScyllaService
                 throw e;
             }
         });
-        await AuctionsTable.Insert(new CassandraAuction()
+        var statement = AuctionsTable.Insert(new CassandraAuction()
         {
             Uuid = auctionUuid,
             Auctioneer = sellerUuid,
@@ -113,7 +114,10 @@ public class ScyllaService
             NbtLookup = auction.FlatenedNBT,
             Count = auction.Count,
             Bids = bids
-        }).ExecuteAsync().ConfigureAwait(false);
+        });
+        statement.SetConsistencyLevel(ConsistencyLevel.LocalQuorum);
+
+        await statement.ExecuteAsync().ConfigureAwait(false);
         await bidsTask;
     }
 
