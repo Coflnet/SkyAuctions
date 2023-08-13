@@ -107,10 +107,12 @@ public class ScyllaService
         var statement = AuctionsTable.Insert(converted).SetConsistencyLevel(ConsistencyLevel.LocalQuorum);
         foreach (var item in bids)
         {
-            batch.Add(BidsTable.Insert(item));
+            batch = batch.Add(BidsTable.Insert(item));
         }
-        batch.Add(statement);
+        batch = batch.Add(statement);
         batch.SetConsistencyLevel(ConsistencyLevel.LocalQuorum);
+        batch.SetTimestamp(auction.End);
+        batch.SetRetryPolicy(new DefaultRetryPolicy());
         await Session.ExecuteAsync(batch).ConfigureAwait(false);
     }
 
