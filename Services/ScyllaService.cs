@@ -69,13 +69,13 @@ public class ScyllaService
         var isSold = auction.HighestBidAmount > 0;
         var sellerUuid = Guid.Parse(auction.AuctioneerId);
         // check if exists
-        var existing = (await AuctionsTable.Where(a => a.Tag == auction.Tag && a.IsSold == isSold && a.End == auction.End && a.Uuid == auctionUuid).Select(a => a.Auctioneer).ExecuteAsync()).FirstOrDefault();
-        if (existing != null && sellerUuid == existing)
-        {
-            if (Random.Shared.NextDouble() < 0.01)
-                Console.WriteLine("Already exists");
-            return;
-        }
+        // var existing = (await AuctionsTable.Where(a => a.Tag == auction.Tag && a.IsSold == isSold && a.End == auction.End && a.Uuid == auctionUuid).Select(a => a.Auctioneer).ExecuteAsync()).FirstOrDefault();
+        // if (existing != null && sellerUuid == existing)
+        // {
+        //     if (Random.Shared.NextDouble() < 0.01)
+        //         Console.WriteLine("Already exists");
+        //     return;
+        // }
         var bidsTask = Parallel.ForEachAsync(bids, async (b, t) =>
         {
             try
