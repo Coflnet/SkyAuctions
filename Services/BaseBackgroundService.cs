@@ -48,21 +48,23 @@ public class SellsCollector : BackgroundService
         var maxTime = DateTime.UtcNow.AddDays(-14);
         var tag = "";
         var channel = Channel.CreateUnbounded<Func<Task>>();
+        var errorCount = 0;
         for (int i = 0; i < 150; i++)
         {
             _ = Task.Run(async () =>
             {
                 while (await channel.Reader.WaitToReadAsync())
                 {
-                    var errorCount = 0;
                     while (channel.Reader.TryRead(out var action))
                     {
                         try { await action(); errorCount = 0; }
                         catch (Exception e)
                         {
                             logger.LogError(e, "Error while executing action");
-                            await Task.Delay(500 * (++errorCount));
                             channel.Writer.TryWrite(action);
+                            // thread safe increment
+                            Interlocked.Increment(ref errorCount);
+                            await Task.Delay(100 * errorCount);
                         }
                     }
                 }
@@ -86,7 +88,8 @@ public class SellsCollector : BackgroundService
                 continue;
             foreach (var auction in batch)
             {
-                channel.Writer.TryWrite(async () => { 
+                channel.Writer.TryWrite(async () =>
+                {
                     try
                     {
                         await scyllaService.InsertAuction(auction);
