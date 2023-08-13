@@ -69,25 +69,13 @@ public class ScyllaService
         var isSold = auction.HighestBidAmount > 0;
         var sellerUuid = Guid.Parse(auction.AuctioneerId);
         // check if exists
-        // var existing = (await AuctionsTable.Where(a => a.Tag == auction.Tag && a.IsSold == isSold && a.End == auction.End && a.Uuid == auctionUuid).Select(a => a.Auctioneer).ExecuteAsync()).FirstOrDefault();
-        // if (existing != null && sellerUuid == existing)
-        // {
-        //     if (Random.Shared.NextDouble() < 0.01)
-        //         Console.WriteLine("Already exists");
-        //     return;
-        // }
-        var bidsTask = Parallel.ForEachAsync(bids, async (b, t) =>
+        var existing = (await AuctionsTable.Where(a => a.Tag == auction.Tag && a.IsSold == isSold && a.End == auction.End && a.Uuid == auctionUuid).Select(a => a.Auctioneer).ExecuteAsync()).FirstOrDefault();
+        if (existing != null && sellerUuid == existing)
         {
-            try
-            {
-                await BidsTable.Insert(b).ExecuteAsync().ConfigureAwait(false);
-            }
-            catch (Exception e)
-            {
-                Logger.LogError(e, "Failed to insert bid\n" + JsonConvert.SerializeObject(b));
-                throw e;
-            }
-        });
+            if (Random.Shared.NextDouble() < 0.01)
+                Console.WriteLine("Already exists");
+            return;
+        }
         var converted = new CassandraAuction()
         {
             Uuid = auctionUuid,
@@ -115,9 +103,15 @@ public class ScyllaService
             Count = auction.Count,
             Bids = bids
         };
+        BatchStatement batch = new();
         var statement = AuctionsTable.Insert(converted).SetConsistencyLevel(ConsistencyLevel.LocalQuorum);
-        await statement.ExecuteAsync().ConfigureAwait(false);
-        await bidsTask;
+        foreach (var item in bids)
+        {
+            batch.Add(BidsTable.Insert(item));
+        }
+        batch.Add(statement);
+        batch.SetConsistencyLevel(ConsistencyLevel.LocalQuorum);
+        await Session.ExecuteAsync(batch).ConfigureAwait(false);
     }
 
     private Table<CassandraAuction> GetAuctionsTable()
