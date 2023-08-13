@@ -88,7 +88,7 @@ public class ScyllaService
                 throw e;
             }
         });
-        var statement = AuctionsTable.Insert(new CassandraAuction()
+        var converted = new CassandraAuction()
         {
             Uuid = auctionUuid,
             Auctioneer = sellerUuid,
@@ -114,8 +114,8 @@ public class ScyllaService
             NbtLookup = auction.FlatenedNBT,
             Count = auction.Count,
             Bids = bids
-        }).SetConsistencyLevel(ConsistencyLevel.LocalQuorum);
-
+        };
+        var statement = AuctionsTable.Insert(converted).SetConsistencyLevel(ConsistencyLevel.LocalQuorum);
         await statement.ExecuteAsync().ConfigureAwait(false);
         await bidsTask;
     }

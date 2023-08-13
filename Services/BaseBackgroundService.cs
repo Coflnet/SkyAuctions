@@ -86,7 +86,18 @@ public class SellsCollector : BackgroundService
                 continue;
             foreach (var auction in batch)
             {
-                channel.Writer.TryWrite(() => scyllaService.InsertAuction(auction));
+                channel.Writer.TryWrite(async () => { 
+                    try
+                    {
+                        await scyllaService.InsertAuction(auction);
+                        consumeCount.Inc();
+                    }
+                    catch (System.Exception)
+                    {
+                        logger.LogError($"Error while inserting {auction.Id}\n{Newtonsoft.Json.JsonConvert.SerializeObject(auction)}");
+                        throw;
+                    }
+                });
                 if (channel.Reader.Count > 1000)
                     await Task.Delay(20);
             }
