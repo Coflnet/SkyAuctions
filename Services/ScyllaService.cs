@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using System.Threading.Tasks;
 using Cassandra;
 using Cassandra.Data.Linq;
@@ -112,7 +113,11 @@ public class ScyllaService
         batch = batch.Add(statement);
         batch.SetConsistencyLevel(ConsistencyLevel.LocalQuorum);
         batch.SetTimestamp(auction.End);
+        batch.SetBatchType(BatchType.Unlogged);
         batch.SetRetryPolicy(new DefaultRetryPolicy());
+        
+        batch.SetRoutingKey(statement.RoutingKey);
+        
         await Session.ExecuteAsync(batch).ConfigureAwait(false);
     }
 

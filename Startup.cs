@@ -64,6 +64,7 @@ public class Startup
         {
             Console.WriteLine("Connecting to Cassandra...");
             var builder = Cluster.Builder().AddContactPoints(Configuration["CASSANDRA:HOSTS"].Split(","))
+                .WithLoadBalancingPolicy(new TokenAwarePolicy(new DCAwareRoundRobinPolicy()))
                 .WithCredentials(Configuration["CASSANDRA:USER"], Configuration["CASSANDRA:PASSWORD"])
                 .WithDefaultKeyspace(Configuration["CASSANDRA:KEYSPACE"]);
 
