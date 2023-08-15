@@ -74,8 +74,6 @@ public class ScyllaService
     private static CassandraAuction ToCassandra(SaveAuction auction)
     {
         var auctionUuid = Guid.Parse(auction.Uuid);
-        if (auction.Tag == null)
-            auction.Tag = "null";
         auction = new SaveAuction(auction);
         var root = auction.NbtData?.Root() ?? new fNbt.NbtCompound("i");
         if (auction.AnvilUses > 0)
@@ -98,7 +96,7 @@ public class ScyllaService
         var itemUid = long.Parse(auction.FlatenedNBT.GetValueOrDefault("uid", "0"), System.Globalization.NumberStyles.HexNumber);
         var itemUuid = Guid.Parse(auction.FlatenedNBT.GetValueOrDefault("uuid") ?? "00000000-0000-0000-0000-" + auction.FlatenedNBT.GetValueOrDefault("uid", "000000000000"));
         var isSold = auction.HighestBidAmount > 0;
-        var sellerUuid = Guid.Parse(auction.AuctioneerId);
+        var sellerUuid = Guid.Parse(auction.AuctioneerId ?? Guid.Empty.ToString());
         var converted = new CassandraAuction()
         {
             Uuid = auctionUuid,

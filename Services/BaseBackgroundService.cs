@@ -77,6 +77,11 @@ public class SellsCollector : BackgroundService
                             await scyllaService.InsertAuctionsOfTag(groupBatch);
                             consumeCount.Inc(groupBatch.Count());
                         }
+                        catch(Cassandra.WriteTimeoutException e)
+                        {
+                            logger.LogError(e, $"Timeout Error while inserting {groupBatch.First().Tag}");
+                            throw;
+                        }
                         catch (System.Exception)
                         {
                             logger.LogError($"Error while inserting {groupBatch.First().Tag}\n{Newtonsoft.Json.JsonConvert.SerializeObject(groupBatch)}");
