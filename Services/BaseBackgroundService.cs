@@ -42,14 +42,14 @@ public class SellsCollector : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await scyllaService.Create();
-        var batchSize = 1000;
+        var batchSize = 2000;
         var hadMore = true;
         currentOffset = await CacheService.Instance.GetFromRedis<int>(RedisProgressKey);
         logger.LogInformation($"Starting at {currentOffset}");
         var maxTime = DateTime.UtcNow.AddDays(-14);
         var tag = "";
         var channel = Channel.CreateUnbounded<Func<Task>>();
-        StartWorkers(channel);
+        StartWorkers(channel, 100);
         while (currentOffset < 600_000_000)
         {
             using var scope = scopeFactory.CreateScope();
@@ -136,10 +136,10 @@ public class SellsCollector : BackgroundService
         );
     }
 
-    private void StartWorkers(Channel<Func<Task>> channel)
+    private void StartWorkers(Channel<Func<Task>> channel, int count)
     {
         var errorCount = 0;
-        for (int i = 0; i < 150; i++)
+        for (int i = 0; i < count; i++)
         {
             _ = Task.Run(async () =>
             {
