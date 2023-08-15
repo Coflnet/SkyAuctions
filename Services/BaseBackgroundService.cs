@@ -12,6 +12,7 @@ using Coflnet.Sky.Auctions.Controllers;
 using Coflnet.Sky.Core;
 using System;
 using System.Threading.Channels;
+using MoreLinq;
 
 namespace Coflnet.Sky.Auctions.Services;
 
@@ -48,6 +49,90 @@ public class SellsCollector : BackgroundService
         var maxTime = DateTime.UtcNow.AddDays(-14);
         var tag = "";
         var channel = Channel.CreateUnbounded<Func<Task>>();
+        StartWorkers(channel);
+        while (currentOffset < 600_000_000)
+        {
+            using var scope = scopeFactory.CreateScope();
+            using var context = new HypixelContext();
+            logger.LogDebug($"Loading batch {currentOffset} from db");
+            var batch = await context.Auctions
+                //.Where(a => a.ItemId == i && a.End < maxTime)
+                .Where(a => a.Id >= currentOffset && a.Id < currentOffset + batchSize)
+                .Include(a => a.Bids).Include(a => a.Enchantments).Include(a => a.NbtData).Include(a => a.NBTLookup).Include(a => a.CoopMembers)
+                //.Skip(offset).Take(batchSize)
+                .AsNoTracking().ToListAsync();
+            currentOffset += batchSize;
+            hadMore = batch.Count > 0;
+
+            if (!hadMore)
+                continue;
+            foreach (var group in batch.GroupBy(a => a.Tag).Select(g => g.Batch(30)))
+            {
+                foreach (var groupBatch in group)
+                {
+                    channel.Writer.TryWrite(async () =>
+                    {
+                        try
+                        {
+                            await scyllaService.InsertAuctionsOfTag(groupBatch);
+                            consumeCount.Inc(groupBatch.Count());
+                        }
+                        catch (System.Exception)
+                        {
+                            logger.LogError($"Error while inserting {groupBatch.First().Tag}\n{Newtonsoft.Json.JsonConvert.SerializeObject(groupBatch)}");
+                            throw;
+                        }
+                    });
+                }
+                if (channel.Reader.Count > 500)
+                    await Task.Delay(20);
+            }
+            foreach (var item in batch.SelectMany(b =>
+            {
+                foreach (var bid in b.Bids)
+                {
+                    bid.AuctionId = b.Uuid;
+                }
+                return b.Bids;
+            }).GroupBy(g => g.Bidder))
+            {
+                channel.Writer.TryWrite(async () =>
+                {
+                    try
+                    {
+                        await scyllaService.InsertBids(item);
+                    }
+                    catch (System.Exception)
+                    {
+                        logger.LogError($"Error while inserting {item.Key}\n{Newtonsoft.Json.JsonConvert.SerializeObject(item)}");
+                        throw;
+                    }
+                });
+                if (channel.Reader.Count > 500)
+                    await Task.Delay(20);
+            }
+            channel.Writer.TryWrite(async () =>
+            {
+                var toStore = currentOffset - batchSize * 5;
+                await SetOffset(toStore);
+                logger.LogInformation($"Reached offset {currentOffset} {tag} {batch.Last().End}");
+            });
+            tag = batch.LastOrDefault()?.Tag;
+        }
+        logger.LogInformation($"Finished completely");
+
+        await Coflnet.Kafka.KafkaConsumer.ConsumeBatch<SaveAuction>(
+                    config,
+                    config["TOPICS:SOLD_AUCTION"],
+                    scyllaService.InsertAuctions,
+                    stoppingToken,
+                    "sky-auctions",
+                    100
+        );
+    }
+
+    private void StartWorkers(Channel<Func<Task>> channel)
+    {
         var errorCount = 0;
         for (int i = 0; i < 150; i++)
         {
@@ -70,58 +155,6 @@ public class SellsCollector : BackgroundService
                 }
             });
         }
-        while (currentOffset < 600_000_000)
-        {
-            using var scope = scopeFactory.CreateScope();
-            using var context = new HypixelContext();
-            logger.LogDebug($"Loading batch {currentOffset} from db");
-            var batch = await context.Auctions
-                //.Where(a => a.ItemId == i && a.End < maxTime)
-                .Where(a => a.Id >= currentOffset && a.Id < currentOffset + batchSize)
-                .Include(a => a.Bids).Include(a => a.Enchantments).Include(a => a.NbtData).Include(a => a.NBTLookup).Include(a => a.CoopMembers)
-                //.Skip(offset).Take(batchSize)
-                .AsNoTracking().ToListAsync();
-            currentOffset += batchSize;
-            hadMore = batch.Count > 0;
-
-            if (!hadMore)
-                continue;
-            foreach (var auction in batch)
-            {
-                channel.Writer.TryWrite(async () =>
-                {
-                    try
-                    {
-                        await scyllaService.InsertAuction(auction);
-                        consumeCount.Inc();
-                    }
-                    catch (System.Exception)
-                    {
-                        logger.LogError($"Error while inserting {auction.Id}\n{Newtonsoft.Json.JsonConvert.SerializeObject(auction)}");
-                        throw;
-                    }
-                });
-                if (channel.Reader.Count > 1000)
-                    await Task.Delay(20);
-            }
-            channel.Writer.TryWrite(async () =>
-            {
-                var toStore = currentOffset - batchSize * 2;
-                await SetOffset(toStore);
-                logger.LogInformation($"Reached offset {currentOffset} {tag} {batch.Last().End}");
-            });
-            tag = batch.LastOrDefault()?.Tag;
-        }
-        logger.LogInformation($"Finished completely");
-
-        await Coflnet.Kafka.KafkaConsumer.ConsumeBatch<SaveAuction>(
-                    config,
-                    config["TOPICS:SOLD_AUCTION"],
-                    scyllaService.InsertAuctions,
-                    stoppingToken,
-                    "sky-auctions",
-                    100
-        );
     }
 
     public static async Task SetOffset(int toStore)

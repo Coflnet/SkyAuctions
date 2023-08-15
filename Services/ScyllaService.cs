@@ -43,10 +43,38 @@ public class ScyllaService
 
     public async Task InsertAuction(SaveAuction auction)
     {
-        var auctionUuid = Guid.Parse(auction.Uuid);
         if (auction.AuctioneerId == null && auction.Tag == null && auction.HighestBidAmount == 0)
             return;
-        if(auction.Tag == null)
+        CassandraAuction converted = ToCassandra(auction);
+        // check if exists
+        var existing = (await AuctionsTable.Where(a => a.Tag == converted.Tag && a.IsSold == converted.IsSold && a.End == converted.End && a.Uuid == converted.Uuid).Select(a => a.Auctioneer).ExecuteAsync()).FirstOrDefault();
+        if (existing != null && converted.Auctioneer == existing)
+        {
+            if (Random.Shared.NextDouble() < 0.01)
+                Console.WriteLine("Already exists");
+            return;
+        }
+        BatchStatement batch = new();
+        var statement = AuctionsTable.Insert(converted).SetConsistencyLevel(ConsistencyLevel.LocalQuorum);
+        foreach (var item in converted.Bids)
+        {
+            batch = batch.Add(BidsTable.Insert(item));
+        }
+        batch = batch.Add(statement);
+        batch.SetConsistencyLevel(ConsistencyLevel.LocalQuorum);
+        batch.SetTimestamp(converted.End);
+        batch.SetBatchType(BatchType.Unlogged);
+        batch.SetRetryPolicy(new DefaultRetryPolicy());
+
+        batch.SetRoutingKey(statement.RoutingKey);
+
+        await Session.ExecuteAsync(batch).ConfigureAwait(false);
+    }
+
+    private static CassandraAuction ToCassandra(SaveAuction auction)
+    {
+        var auctionUuid = Guid.Parse(auction.Uuid);
+        if (auction.Tag == null)
             auction.Tag = "null";
         auction = new SaveAuction(auction);
         var root = auction.NbtData?.Root() ?? new fNbt.NbtCompound("i");
@@ -71,14 +99,6 @@ public class ScyllaService
         var itemUuid = Guid.Parse(auction.FlatenedNBT.GetValueOrDefault("uuid") ?? "00000000-0000-0000-0000-" + auction.FlatenedNBT.GetValueOrDefault("uid", "000000000000"));
         var isSold = auction.HighestBidAmount > 0;
         var sellerUuid = Guid.Parse(auction.AuctioneerId);
-        // check if exists
-        var existing = (await AuctionsTable.Where(a => a.Tag == auction.Tag && a.IsSold == isSold && a.End == auction.End && a.Uuid == auctionUuid).Select(a => a.Auctioneer).ExecuteAsync()).FirstOrDefault();
-        if (existing != null && sellerUuid == existing)
-        {
-            if (Random.Shared.NextDouble() < 0.01)
-                Console.WriteLine("Already exists");
-            return;
-        }
         var converted = new CassandraAuction()
         {
             Uuid = auctionUuid,
@@ -106,21 +126,7 @@ public class ScyllaService
             Count = auction.Count,
             Bids = bids
         };
-        BatchStatement batch = new();
-        var statement = AuctionsTable.Insert(converted).SetConsistencyLevel(ConsistencyLevel.LocalQuorum);
-        foreach (var item in bids)
-        {
-            batch = batch.Add(BidsTable.Insert(item));
-        }
-        batch = batch.Add(statement);
-        batch.SetConsistencyLevel(ConsistencyLevel.LocalQuorum);
-        batch.SetTimestamp(auction.End);
-        batch.SetBatchType(BatchType.Unlogged);
-        batch.SetRetryPolicy(new DefaultRetryPolicy());
-        
-        batch.SetRoutingKey(statement.RoutingKey);
-        
-        await Session.ExecuteAsync(batch).ConfigureAwait(false);
+        return converted;
     }
 
     private Table<CassandraAuction> GetAuctionsTable()
@@ -267,5 +273,31 @@ public class ScyllaService
                 Logger.LogError(e, "Failed to insert auction\n" + JsonConvert.SerializeObject(a));
             }
         });
+    }
+
+    internal async Task InsertAuctionsOfTag(IEnumerable<SaveAuction> auction)
+    {
+        var batch = new BatchStatement();
+        Statement statement = null;
+        foreach (var a in auction)
+        {
+            statement = AuctionsTable.Insert(ToCassandra(a));
+            batch.Add(statement);
+        }
+        batch.SetRoutingKey(statement.RoutingKey);
+        await Session.ExecuteAsync(batch).ConfigureAwait(false);
+    }
+
+    internal async Task InsertBids(IEnumerable< SaveBids> bids)
+    {
+        var batch = new BatchStatement();
+        Statement statement = null;
+        foreach (var b in bids)
+        {
+            statement = BidsTable.Insert(ToCassandra(b, Guid.Parse(b.AuctionId)));
+            batch.Add(statement);
+        }
+        batch.SetRoutingKey(statement.RoutingKey);
+        await Session.ExecuteAsync(batch).ConfigureAwait(false);
     }
 }
