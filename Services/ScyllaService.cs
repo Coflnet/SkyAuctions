@@ -46,6 +46,8 @@ public class ScyllaService
         var auctionUuid = Guid.Parse(auction.Uuid);
         if (auction.AuctioneerId == null && auction.Tag == null && auction.HighestBidAmount == 0)
             return;
+        if(auction.Tag == null)
+            auction.Tag = "null";
         auction = new SaveAuction(auction);
         var root = auction.NbtData?.Root() ?? new fNbt.NbtCompound("i");
         if (auction.AnvilUses > 0)

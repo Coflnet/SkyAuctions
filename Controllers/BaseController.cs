@@ -47,4 +47,14 @@ public class AuctionController : ControllerBase
     {
         await SellsCollector.SetOffset(id);
     }
+    [HttpPost]
+    [Route("/import/migrate")]
+    public async Task Migrate(int id)
+    {
+        using var context = new HypixelContext();
+        var auction = await context.Auctions.Where(a => a.Id == id)
+                .Include(a => a.Bids).Include(a => a.Enchantments).Include(a => a.NbtData).Include(a => a.NBTLookup).Include(a => a.CoopMembers)
+                .FirstAsync();
+        await scyllaService.InsertAuction(auction);
+    }
 }
