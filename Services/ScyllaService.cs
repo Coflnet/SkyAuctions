@@ -93,7 +93,7 @@ public class ScyllaService
         if (colorString != null)
             color = (int)NBT.GetColor(colorString);
         var bids = auction.Bids?.Select(b => ToCassandra(b, Guid.Parse(auction.Uuid))).ToList();
-        var enchants = auction.Enchantments.ToDictionary(e => e.Type == EnchantmentType.unknown ? "unkown" + Random.Shared.Next(1, 20) : e.Type.ToString(), e => (int)e.Level);
+        var enchants = auction.Enchantments.ToDictionary(e => e.Type == EnchantmentType.unknown ? ("unknown" + Random.Shared.Next(1, 20)) : e.Type.ToString(), e => (int)e.Level);
         var highestBidder = auction.Bids.Count == 0 ? Guid.Empty : Guid.Parse(auction.Bids.OrderByDescending(b => b.Amount).First().Bidder);
         var itemUid = long.Parse(auction.FlatenedNBT.GetValueOrDefault("uid", "0"), System.Globalization.NumberStyles.HexNumber);
         var itemUuid = Guid.Parse(auction.FlatenedNBT.GetValueOrDefault("uuid") ?? "00000000-0000-0000-0000-" + auction.FlatenedNBT.GetValueOrDefault("uid", "000000000000"));
