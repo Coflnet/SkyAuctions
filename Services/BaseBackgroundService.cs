@@ -49,7 +49,7 @@ public class SellsCollector : BackgroundService
         var maxTime = DateTime.UtcNow.AddDays(-14);
         var tag = "";
         var channel = Channel.CreateUnbounded<Func<Task>>();
-        StartWorkers(channel, 100);
+        StartWorkers(channel, 60);
         while (currentOffset < 600_000_000)
         {
             using var scope = scopeFactory.CreateScope();
