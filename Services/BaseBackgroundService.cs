@@ -54,7 +54,7 @@ public class SellsCollector : BackgroundService
         {
             using var scope = scopeFactory.CreateScope();
             using var context = new HypixelContext();
-            logger.LogDebug($"Loading batch {currentOffset} from db");
+            logger.LogInformation($"Loading batch {currentOffset} from db");
             var batch = await context.Auctions
                 //.Where(a => a.ItemId == i && a.End < maxTime)
                 .Where(a => a.Id >= currentOffset && a.Id < currentOffset + batchSize)
@@ -63,6 +63,7 @@ public class SellsCollector : BackgroundService
                 .AsNoTracking().ToListAsync();
             currentOffset += batchSize;
             hadMore = batch.Count > 0;
+            logger.LogInformation($"Loaded batch {currentOffset} from db");
 
             if (!hadMore)
                 continue;
