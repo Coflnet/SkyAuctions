@@ -25,6 +25,7 @@ public class SellsCollector : BackgroundService
     private ScyllaService scyllaService;
     private static int currentOffset = 0;
     private Prometheus.Counter consumeCount = Prometheus.Metrics.CreateCounter("sky_base_conume", "How many messages were consumed");
+    private Prometheus.Counter batchInsertCount = Prometheus.Metrics.CreateCounter("sky_auctions_batch_count", "How many batches were sent to scylla");
 
     public SellsCollector(
         IServiceScopeFactory scopeFactory, IConfiguration config, ILogger<SellsCollector> logger, ScyllaService scyllaService)
@@ -77,8 +78,9 @@ public class SellsCollector : BackgroundService
                         {
                             await scyllaService.InsertAuctionsOfTag(groupBatch);
                             consumeCount.Inc(groupBatch.Count());
+                            batchInsertCount.Inc();
                         }
-                        catch(Cassandra.WriteTimeoutException e)
+                        catch (Cassandra.WriteTimeoutException e)
                         {
                             logger.LogError(e, $"Timeout Error while inserting {groupBatch.First().Tag}");
                             throw;
@@ -107,6 +109,7 @@ public class SellsCollector : BackgroundService
                     try
                     {
                         await scyllaService.InsertBids(item);
+                        batchInsertCount.Inc();
                     }
                     catch (System.Exception)
                     {
