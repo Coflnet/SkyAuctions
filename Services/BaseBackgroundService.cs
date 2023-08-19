@@ -102,7 +102,7 @@ public class SellsCollector : BackgroundService
                     bid.AuctionId = b.Uuid;
                 }
                 return b.Bids;
-            }).GroupBy(g => g.Bidder).Batch(3).ToList())
+            }).GroupBy(g => g.Bidder).Batch(5).ToList())
             {
                 channel.Writer.TryWrite(async () =>
                 {
