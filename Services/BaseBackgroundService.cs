@@ -43,7 +43,7 @@ public class SellsCollector : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await scyllaService.Create();
-        var batchSize = 2000;
+        var batchSize = 2500;
         var hadMore = true;
         currentOffset = await CacheService.Instance.GetFromRedis<int>(RedisProgressKey);
         logger.LogInformation($"Starting at {currentOffset}");
@@ -102,22 +102,22 @@ public class SellsCollector : BackgroundService
                     bid.AuctionId = b.Uuid;
                 }
                 return b.Bids;
-            }).GroupBy(g => g.Bidder))
+            }).GroupBy(g => g.Bidder).Batch(3).ToList())
             {
                 channel.Writer.TryWrite(async () =>
                 {
                     try
                     {
-                        await scyllaService.InsertBids(item);
+                        await scyllaService.InsertBids(item.SelectMany(i => i));
                         batchInsertCount.Inc();
                     }
                     catch (System.Exception)
                     {
-                        logger.LogError($"Error while inserting {item.Key}\n{Newtonsoft.Json.JsonConvert.SerializeObject(item)}");
+                        logger.LogError($"Error while inserting {item.First().Key}\n{Newtonsoft.Json.JsonConvert.SerializeObject(item)}");
                         throw;
                     }
                 });
-                if (channel.Reader.Count > 500)
+                if (channel.Reader.Count > 200)
                     await Task.Delay(20);
             }
             channel.Writer.TryWrite(async () =>
