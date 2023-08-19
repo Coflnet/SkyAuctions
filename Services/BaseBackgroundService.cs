@@ -68,7 +68,7 @@ public class SellsCollector : BackgroundService
 
             if (!hadMore)
                 continue;
-            foreach (var group in batch.GroupBy(a => a.Tag).Select(g => g.Batch(30)))
+            foreach (var group in batch.GroupBy(a => a.Tag).Select(g => g.Batch(12)))
             {
                 foreach (var groupBatch in group)
                 {
