@@ -19,6 +19,7 @@ namespace Coflnet.Sky.Auctions.Services;
 public class SellsCollector : BackgroundService
 {
     private const string RedisProgressKey = "lastMigratedAuctionIndex";
+    private const int BatchSize = 2500;
     private IServiceScopeFactory scopeFactory;
     private IConfiguration config;
     private ILogger<SellsCollector> logger;
@@ -43,7 +44,6 @@ public class SellsCollector : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await scyllaService.Create();
-        var batchSize = 2500;
         var hadMore = true;
         currentOffset = await CacheService.Instance.GetFromRedis<int>(RedisProgressKey);
         logger.LogInformation($"Starting at {currentOffset}");
@@ -58,11 +58,11 @@ public class SellsCollector : BackgroundService
             logger.LogInformation($"Loading batch {currentOffset} from db");
             var batch = await context.Auctions
                 //.Where(a => a.ItemId == i && a.End < maxTime)
-                .Where(a => a.Id >= currentOffset && a.Id < currentOffset + batchSize)
+                .Where(a => a.Id >= currentOffset && a.Id < currentOffset + BatchSize)
                 .Include(a => a.Bids).Include(a => a.Enchantments).Include(a => a.NbtData).Include(a => a.NBTLookup).Include(a => a.CoopMembers)
                 //.Skip(offset).Take(batchSize)
                 .AsNoTracking().ToListAsync();
-            currentOffset += batchSize;
+            currentOffset += BatchSize;
             hadMore = batch.Count > 0;
             logger.LogInformation($"Loaded batch {currentOffset} from db");
 
@@ -122,7 +122,7 @@ public class SellsCollector : BackgroundService
             }
             channel.Writer.TryWrite(async () =>
             {
-                var toStore = currentOffset - batchSize * 5;
+                var toStore = currentOffset - BatchSize * 5;
                 await SetOffset(toStore);
                 logger.LogInformation($"Reached offset {currentOffset} {tag} {batch.Last().End}");
             });
@@ -168,7 +168,7 @@ public class SellsCollector : BackgroundService
 
     public static async Task SetOffset(int toStore)
     {
-        if (Math.Abs(toStore - currentOffset) > 10000)
+        if (Math.Abs(toStore - currentOffset) > BatchSize * 10)
             currentOffset = toStore;
         await CacheService.Instance.SaveInRedis(RedisProgressKey, toStore);
     }
