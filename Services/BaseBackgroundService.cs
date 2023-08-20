@@ -27,6 +27,7 @@ public class SellsCollector : BackgroundService
     private static int currentOffset = 0;
     private Prometheus.Counter consumeCount = Prometheus.Metrics.CreateCounter("sky_base_conume", "How many messages were consumed");
     private Prometheus.Counter batchInsertCount = Prometheus.Metrics.CreateCounter("sky_auctions_batch_count", "How many batches were sent to scylla");
+    private static Prometheus.Gauge offsetGauge = Prometheus.Metrics.CreateGauge("sky_auctions_offset", "Current offset in the database");
 
     public SellsCollector(
         IServiceScopeFactory scopeFactory, IConfiguration config, ILogger<SellsCollector> logger, ScyllaService scyllaService)
@@ -170,6 +171,7 @@ public class SellsCollector : BackgroundService
     {
         if (Math.Abs(toStore - currentOffset) > BatchSize * 10)
             currentOffset = toStore;
+        offsetGauge.Set(toStore);
         await CacheService.Instance.SaveInRedis(RedisProgressKey, toStore);
     }
 
