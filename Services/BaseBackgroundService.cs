@@ -135,7 +135,11 @@ public class SellsCollector : BackgroundService
         await Coflnet.Kafka.KafkaConsumer.ConsumeBatch<SaveAuction>(
                     config,
                     config["TOPICS:SOLD_AUCTION"],
-                    scyllaService.InsertAuctions,
+                    async b=>{
+                        await scyllaService.InsertAuctionsOfTag(b);
+                        await scyllaService.InsertBids(b.SelectMany(a=>a.Bids));
+                        consumeCount.Inc(b.Count());
+                    },
                     stoppingToken,
                     "sky-auctions",
                     50
