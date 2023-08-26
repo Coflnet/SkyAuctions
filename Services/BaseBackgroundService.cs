@@ -52,7 +52,7 @@ public class SellsCollector : BackgroundService
         var tag = "";
         var channel = Channel.CreateUnbounded<Func<Task>>();
         StartWorkers(channel, 60);
-        while (currentOffset < 597_000_000)
+        while (currentOffset < 597_500_000)
         {
             using var scope = scopeFactory.CreateScope();
             using var context = new HypixelContext();
@@ -130,6 +130,7 @@ public class SellsCollector : BackgroundService
             tag = batch.LastOrDefault()?.Tag;
         }
         logger.LogInformation($"Finished completely");
+        await Task.Delay(1000);
 
         await Coflnet.Kafka.KafkaConsumer.ConsumeBatch<SaveAuction>(
                     config,
@@ -137,7 +138,7 @@ public class SellsCollector : BackgroundService
                     scyllaService.InsertAuctions,
                     stoppingToken,
                     "sky-auctions",
-                    100
+                    50
         );
     }
 
