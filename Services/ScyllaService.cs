@@ -280,6 +280,8 @@ public class ScyllaService
         foreach (var a in auction)
         {
             statement = AuctionsTable.Insert(ToCassandra(a));
+            var time = a.Bids.Select(b => b.Timestamp).DefaultIfEmpty(a.Start).Max();
+            statement.SetTimestamp(time);
             batch.Add(statement);
         }
         batch.SetRoutingKey(statement.RoutingKey);
