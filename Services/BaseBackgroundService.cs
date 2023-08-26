@@ -136,7 +136,7 @@ public class SellsCollector : BackgroundService
                     config,
                     config["TOPICS:SOLD_AUCTION"],
                     async ab=>{
-                        await scyllaService.InsertAuctionsOfTag(ab);
+                        await scyllaService.InsertAuctions(ab);
                         await scyllaService.InsertBids(ab.SelectMany(a =>
                         {
                             foreach (var item in a.Bids)
