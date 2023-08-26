@@ -290,6 +290,8 @@ public class ScyllaService
 
     internal async Task InsertBids(IEnumerable<SaveBids> bids)
     {
+        if(bids == null)
+            return;
         var batch = new BatchStatement();
         Statement statement = null;
         foreach (var b in bids)
