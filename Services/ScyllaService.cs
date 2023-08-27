@@ -6,7 +6,9 @@ using System.Threading.Tasks;
 using Cassandra;
 using Cassandra.Data.Linq;
 using Cassandra.Mapping;
+using Coflnet.Sky.Auctions.Models;
 using Coflnet.Sky.Core;
+using Coflnet.Sky.Filter;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using static Coflnet.Sky.Core.Enchantment;
@@ -345,5 +347,23 @@ public class ScyllaService
         }
         batch.SetRoutingKey(statement.RoutingKey);
         await Session.ExecuteAsync(batch).ConfigureAwait(false);
+    }
+
+    internal async Task<PriceSumary> GetSumary(string itemTag, Dictionary<string, string> dictionary)
+    {
+        var batch = await AuctionsTable.Where(a => a.Tag == itemTag && a.End > DateTime.UtcNow - TimeSpan.FromDays(3) && a.IsSold).ExecuteAsync();
+
+        var result = new FilterEngine().Filter(batch.Select(CassandraToOld), dictionary).ToList();
+        if(result.Count == 0)
+            return new PriceSumary();
+        return new PriceSumary()
+        {
+            Mean = result.Average(a => a.HighestBidAmount),
+            Min = result.Min(a => a.HighestBidAmount),
+            Max = result.Max(a => a.HighestBidAmount),
+            Volume = result.Count(),
+            Med = result.OrderBy(a => a.HighestBidAmount).Skip(result.Count() / 2).First().HighestBidAmount,
+            Mode = result.GroupBy(a => a.HighestBidAmount).OrderByDescending(g => g.Count()).First().Key,
+        };
     }
 }

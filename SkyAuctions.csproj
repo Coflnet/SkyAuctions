@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../dev/hypixel.csproj" />
+    <ProjectReference Include="../SkyFilter/SkyFilter.csproj" />
   </ItemGroup>
   <PropertyGroup>
     <DefaultItemExcludes>$(DefaultItemExcludes);Client\**\*</DefaultItemExcludes>

@@ -1,12 +1,10 @@
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
-using Coflnet.Sky.Auctions.Models;
 using System;
 using System.Linq;
 using Microsoft.EntityFrameworkCore;
 using System.Collections;
-using System.Collections.Generic;
 using Coflnet.Sky.Auctions.Services;
 using Coflnet.Sky.Core;
 
