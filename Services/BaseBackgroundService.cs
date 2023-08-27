@@ -133,18 +133,19 @@ public class SellsCollector : BackgroundService
         logger.LogInformation($"Finished completely");
         await Task.Delay(1000);
 
-        await Coflnet.Kafka.KafkaConsumer.ConsumeBatch<SaveAuction>(
-                config,
-                config["TOPICS:SOLD_AUCTION"],
-                async ab =>
-                {
-                    await InsertSells(ab);
-                    consumeCount.Inc(ab.Count());
-                },
-                stoppingToken,
-                "sky-auctions",
-                80
-        );
+        while (!stoppingToken.IsCancellationRequested)
+            await Coflnet.Kafka.KafkaConsumer.ConsumeBatch<SaveAuction>(
+                    config,
+                    config["TOPICS:SOLD_AUCTION"],
+                    async ab =>
+                    {
+                        await InsertSells(ab);
+                        consumeCount.Inc(ab.Count());
+                    },
+                    stoppingToken,
+                    "sky-auctions",
+                    50
+            );
     }
 
     private async Task InsertSells(IEnumerable<SaveAuction> ab)
