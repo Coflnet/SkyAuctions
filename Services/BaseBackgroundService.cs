@@ -136,8 +136,7 @@ public class SellsCollector : BackgroundService
                     config,
                     config["TOPICS:SOLD_AUCTION"],
                     async ab=>{
-                        await scyllaService.InsertAuctions(ab);
-                        await scyllaService.InsertBids(ab.SelectMany(a =>
+                        var bidsTask = scyllaService.InsertBids(ab.SelectMany(a =>
                         {
                             foreach (var item in a.Bids)
                             {
@@ -145,6 +144,11 @@ public class SellsCollector : BackgroundService
                             }
                             return a.Bids;
                         }));
+                        await Parallel.ForEachAsync(ab.GroupBy(a => a.Tag).Select(g => g.Batch(12)).SelectMany(g=>g), async (a,c) =>
+                        {
+                            await scyllaService.InsertAuctionsOfTag(a);
+                        });
+                        await bidsTask;
                         consumeCount.Inc(ab.Count());
                     },
                     stoppingToken,
