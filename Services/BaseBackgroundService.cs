@@ -150,7 +150,7 @@ public class SellsCollector : BackgroundService
 
     private async Task InsertSells(IEnumerable<SaveAuction> ab)
     {
-        var bidsTask = Parallel.ForEachAsync(ab.SelectMany(a =>
+        await Parallel.ForEachAsync(ab.SelectMany(a =>
         {
             foreach (var item in a.Bids)
             {
@@ -165,7 +165,6 @@ public class SellsCollector : BackgroundService
         {
             await scyllaService.InsertAuctionsOfTag(a);
         });
-        await bidsTask;
     }
 
     private void StartWorkers(Channel<Func<Task>> channel, int count)
