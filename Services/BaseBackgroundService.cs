@@ -150,21 +150,22 @@ public class SellsCollector : BackgroundService
 
     private async Task InsertSells(IEnumerable<SaveAuction> ab)
     {
-        await Parallel.ForEachAsync(ab.SelectMany(a =>
+        var bidsTask = Parallel.ForEachAsync(ab.SelectMany(a =>
         {
             foreach (var item in a.Bids)
             {
                 item.AuctionId = a.Uuid;
             }
             return a.Bids;
-        }).GroupBy(g => g.Bidder).Batch(3).ToList(), async (b, c) =>
+        }).GroupBy(g => g.Bidder).Batch(20).ToList(), async (b, c) =>
         {
             await scyllaService.InsertBids(b.OrderByDescending(b => b.Count()).SelectMany(i => i));
         });
-        await Parallel.ForEachAsync(ab.GroupBy(a => a.Tag).Select(g => g.Batch(12)).SelectMany(g => g), async (a, c) =>
+        await Parallel.ForEachAsync(ab.GroupBy(a => a.Tag).Select(g => g.Batch(10)).SelectMany(g => g), async (a, c) =>
         {
             await scyllaService.InsertAuctionsOfTag(a);
         });
+        await Task.WhenAll(bidsTask);
     }
 
     private void StartWorkers(Channel<Func<Task>> channel, int count)
