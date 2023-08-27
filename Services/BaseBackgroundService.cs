@@ -13,6 +13,7 @@ using Coflnet.Sky.Core;
 using System;
 using System.Threading.Channels;
 using MoreLinq;
+using System.Collections.Generic;
 
 namespace Coflnet.Sky.Auctions.Services;
 
@@ -133,28 +134,37 @@ public class SellsCollector : BackgroundService
         await Task.Delay(1000);
 
         await Coflnet.Kafka.KafkaConsumer.ConsumeBatch<SaveAuction>(
-                    config,
-                    config["TOPICS:SOLD_AUCTION"],
-                    async ab=>{
-                        var bidsTask = scyllaService.InsertBids(ab.SelectMany(a =>
-                        {
-                            foreach (var item in a.Bids)
-                            {
-                                item.AuctionId = a.Uuid;
-                            }
-                            return a.Bids;
-                        }));
-                        await Parallel.ForEachAsync(ab.GroupBy(a => a.Tag).Select(g => g.Batch(12)).SelectMany(g=>g), async (a,c) =>
-                        {
-                            await scyllaService.InsertAuctionsOfTag(a);
-                        });
-                        await bidsTask;
-                        consumeCount.Inc(ab.Count());
-                    },
-                    stoppingToken,
-                    "sky-auctions",
-                    50
+                config,
+                config["TOPICS:SOLD_AUCTION"],
+                async ab =>
+                {
+                    await InsertSells(ab);
+                    consumeCount.Inc(ab.Count());
+                },
+                stoppingToken,
+                "sky-auctions",
+                80
         );
+    }
+
+    private async Task InsertSells(IEnumerable<SaveAuction> ab)
+    {
+        var bidsTask = Parallel.ForEachAsync(ab.SelectMany(a =>
+        {
+            foreach (var item in a.Bids)
+            {
+                item.AuctionId = a.Uuid;
+            }
+            return a.Bids;
+        }).GroupBy(g => g.Bidder).Batch(3).ToList(), async (b, c) =>
+        {
+            await scyllaService.InsertBids(b.OrderByDescending(b => b.Count()).SelectMany(i => i));
+        });
+        await Parallel.ForEachAsync(ab.GroupBy(a => a.Tag).Select(g => g.Batch(12)).SelectMany(g => g), async (a, c) =>
+        {
+            await scyllaService.InsertAuctionsOfTag(a);
+        });
+        await bidsTask;
     }
 
     private void StartWorkers(Channel<Func<Task>> channel, int count)

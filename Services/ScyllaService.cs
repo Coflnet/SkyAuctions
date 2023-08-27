@@ -12,7 +12,6 @@ using Newtonsoft.Json;
 using static Coflnet.Sky.Core.Enchantment;
 
 namespace Coflnet.Sky.Auctions;
-
 public class ScyllaService
 {
     public Cassandra.ISession Session { get; set; }
@@ -273,11 +272,23 @@ public class ScyllaService
         });
     }
 
-    internal async Task InsertAuctionsOfTag(IEnumerable<SaveAuction> auction)
+    internal async Task InsertAuctionsOfTag(IEnumerable<SaveAuction> auctions)
     {
+        var tag = auctions.First().Tag;
+        if (!auctions.All(a => a.Tag == tag))
+            throw new ArgumentException("All auctions must have the same tag");
         var batch = new BatchStatement();
         Statement statement = null;
-        foreach (var a in auction)
+        try
+        {
+            await AssignExistingData(auctions);
+        }
+        catch (System.Exception e)
+        {
+            Logger.LogError(e, "Failed to assign existing data");
+        }
+        // insert
+        foreach (var a in auctions)
         {
             statement = AuctionsTable.Insert(ToCassandra(a));
             var time = a.Bids.Select(b => b.Timestamp).DefaultIfEmpty(a.Start).Max();
@@ -288,9 +299,42 @@ public class ScyllaService
         await Session.ExecuteAsync(batch).ConfigureAwait(false);
     }
 
+    private async Task AssignExistingData(IEnumerable<SaveAuction> auctions)
+    {
+        // auctions without start are from the sells endpoint and are missing some info that might was available when the auction was created
+        var lookup = auctions
+            .Where(a => a.Start == default)
+            .ToLookup(a => Guid.Parse(a.Uuid));
+        if (!lookup.Any())
+            return;
+        // find and delete not sold auctions
+        var ids = lookup.Select(a => a.Key).ToList();
+        var minEnd = lookup.Select(a => a.Min(a => a.End)).Min();
+        var maxEnd = lookup.Select(a => a.Max(a => a.End)).Max() + TimeSpan.FromDays(14);
+        var tag = lookup.First().First().Tag;
+        var result = await AuctionsTable.Where(a => ids.Contains(a.Uuid) && !a.IsSold && a.End < maxEnd && a.End > minEnd && a.Tag == tag).AllowFiltering().ExecuteAsync();
+        foreach (var a in result)
+        {
+            if (lookup[a.Uuid].Any())
+                continue;
+            var match = lookup[a.Uuid].First();
+            match.Start = a.Start;
+            match.Count = a.Count;
+            match.ItemCreatedAt = a.ItemCreatedAt;
+            match.ItemName = a.ItemName;
+            match.ProfileId = a.ProfileId.ToString();
+            match.Bin = a.Bin;
+            match.StartingBid = a.StartingBid;
+            Console.WriteLine($"retrofitted {match.Uuid} {match.ItemName} {match.Start} {match.Count} {match.ItemCreatedAt} {match.ProfileId} {match.Bin} {match.StartingBid}");
+
+            //statement = AuctionsTable.Delete(a);
+            //batch.Add(statement);
+        }
+    }
+
     internal async Task InsertBids(IEnumerable<SaveBids> bids)
     {
-        if(bids == null)
+        if (bids == null)
             return;
         var batch = new BatchStatement();
         Statement statement = null;
