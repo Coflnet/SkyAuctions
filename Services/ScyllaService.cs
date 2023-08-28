@@ -351,11 +351,23 @@ public class ScyllaService
 
     internal async Task<PriceSumary> GetSumary(string itemTag, Dictionary<string, string> dictionary)
     {
-        var batch = await AuctionsTable.Where(a => a.Tag == itemTag && a.End > DateTime.UtcNow - TimeSpan.FromDays(2) && a.End < DateTime.UtcNow && a.IsSold).ExecuteAsync();
+        var days = 2d;
+        if(dictionary.Remove("days", out var d))
+        {
+            if(!double.TryParse(d, out days))
+            {
+                days = 2d;
+            }
+            // max 2 days, positive
+            days = Math.Min(2, Math.Max(0, days));
+        }
+        var batch = await AuctionsTable.Where(a => a.Tag == itemTag && a.End > DateTime.UtcNow - TimeSpan.FromDays(days) && a.End < DateTime.UtcNow && a.IsSold).ExecuteAsync();
 
         var result = new FilterEngine().Filter(batch.Select(CassandraToOld), dictionary).ToList();
         if (result.Count == 0)
             return new PriceSumary();
+        if(result.GroupBy(a=>a.Uuid).Any(g=>g.Count() > 1))
+            throw new Exception("Duplicate auctions");
         return new PriceSumary()
         {
             Mean = result.Average(a => a.HighestBidAmount),
