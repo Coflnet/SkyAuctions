@@ -351,7 +351,7 @@ public class ScyllaService
 
     internal async Task<PriceSumary> GetSumary(string itemTag, Dictionary<string, string> dictionary)
     {
-        var batch = await AuctionsTable.Where(a => a.Tag == itemTag && a.End > DateTime.UtcNow - TimeSpan.FromDays(3) && a.End < DateTime.UtcNow && a.IsSold).ExecuteAsync();
+        var batch = await AuctionsTable.Where(a => a.Tag == itemTag && a.End > DateTime.UtcNow - TimeSpan.FromDays(2) && a.End < DateTime.UtcNow && a.IsSold).ExecuteAsync();
 
         var result = new FilterEngine().Filter(batch.Select(CassandraToOld), dictionary).ToList();
         if (result.Count == 0)
@@ -368,7 +368,7 @@ public class ScyllaService
     }
     public async Task<List<SaveAuction>> GetRecentBatch(string itemTag)
     {
-        var batch = await AuctionsTable.Where(a => a.Tag == itemTag && a.End > DateTime.UtcNow - TimeSpan.FromDays(3) && a.IsSold).OrderByDescending(a => a.End).Take(1000).ExecuteAsync();
+        var batch = await AuctionsTable.Where(a => a.Tag == itemTag && a.End > DateTime.UtcNow - TimeSpan.FromDays(2) && a.IsSold).OrderByDescending(a => a.End).Take(1000).ExecuteAsync();
         return batch.Select(CassandraToOld).ToList();
     }
 }
