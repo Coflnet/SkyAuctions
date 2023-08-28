@@ -354,7 +354,7 @@ public class ScyllaService
         var batch = await AuctionsTable.Where(a => a.Tag == itemTag && a.End > DateTime.UtcNow - TimeSpan.FromDays(3) && a.IsSold).ExecuteAsync();
 
         var result = new FilterEngine().Filter(batch.Select(CassandraToOld), dictionary).ToList();
-        if(result.Count == 0)
+        if (result.Count == 0)
             return new PriceSumary();
         return new PriceSumary()
         {
@@ -365,5 +365,10 @@ public class ScyllaService
             Med = result.OrderBy(a => a.HighestBidAmount).Skip(result.Count() / 2).First().HighestBidAmount,
             Mode = result.GroupBy(a => a.HighestBidAmount).OrderByDescending(g => g.Count()).First().Key,
         };
+    }
+    public async Task<List<SaveAuction>> GetRecentBatch(string itemTag)
+    {
+        var batch = await AuctionsTable.Where(a => a.Tag == itemTag && a.End > DateTime.UtcNow - TimeSpan.FromDays(1) && a.IsSold).OrderByDescending(a => a.End).Take(1000).ExecuteAsync();
+        return batch.Select(CassandraToOld).ToList();
     }
 }
