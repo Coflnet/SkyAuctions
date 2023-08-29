@@ -315,6 +315,7 @@ public class ScyllaService
         var maxEnd = lookup.Select(a => a.Max(a => a.End)).Max() + TimeSpan.FromDays(14);
         var tag = lookup.First().First().Tag;
         var result = await AuctionsTable.Where(a => ids.Contains(a.Uuid) && !a.IsSold && a.End < maxEnd && a.End > minEnd && a.Tag == tag).AllowFiltering().ExecuteAsync();
+        Logger.LogInformation($"Found {result.Count()} auctions to retrofit");
         foreach (var a in result)
         {
             if (lookup[a.Uuid].Any())
