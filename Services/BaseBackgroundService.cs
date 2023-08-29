@@ -136,7 +136,7 @@ public class SellsCollector : BackgroundService
         while (!stoppingToken.IsCancellationRequested)
             await Coflnet.Kafka.KafkaConsumer.ConsumeBatch<SaveAuction>(
                     config,
-                    config["TOPICS:SOLD_AUCTION"],
+                    new string[] { config["TOPICS:SOLD_AUCTION"], config["TOPICS:NEW_AUCTION"] },
                     async ab =>
                     {
                         await InsertSells(ab);
