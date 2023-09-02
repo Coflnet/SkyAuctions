@@ -303,7 +303,7 @@ public class ScyllaService
     {
         // auctions without start are from the sells endpoint and are missing some info that might was available when the auction was created
         var lookup = auctions
-            .Where(a => a.Start == default)
+            .Where(a => a.Start == default && a.End > DateTime.UtcNow - TimeSpan.FromDays(14))
             .ToLookup(a => Guid.Parse(a.Uuid));
         if (!lookup.Any())
             return;
