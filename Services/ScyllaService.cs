@@ -316,7 +316,7 @@ public class ScyllaService
         Logger.LogInformation($"Found {result.Count()} auctions to retrofit");
         foreach (var a in result)
         {
-            if (lookup[a.Uuid].Any())
+            if (!lookup[a.Uuid].Any())
                 continue;
             var match = lookup[a.Uuid].First();
             match.Start = a.Start;
