@@ -45,6 +45,27 @@ public class SellsCollector : BackgroundService
     /// <returns></returns>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        //wait Migrate();
+        logger.LogInformation($"Finished completely");
+        await Task.Delay(1000);
+
+        while (!stoppingToken.IsCancellationRequested)
+            await Coflnet.Kafka.KafkaConsumer.ConsumeBatch<SaveAuction>(
+                    config,
+                    new string[] { config["TOPICS:SOLD_AUCTION"], config["TOPICS:NEW_AUCTION"] },
+                    async ab =>
+                    {
+                        await InsertSells(ab);
+                        consumeCount.Inc(ab.Count());
+                    },
+                    stoppingToken,
+                    "sky-auctions",
+                    50
+            );
+    }
+
+    private async Task Migrate()
+    {
         await scyllaService.Create();
         var hadMore = true;
         currentOffset = await CacheService.Instance.GetFromRedis<int>(RedisProgressKey);
@@ -52,7 +73,7 @@ public class SellsCollector : BackgroundService
         var maxTime = DateTime.UtcNow.AddDays(-14);
         var tag = "";
         var channel = Channel.CreateUnbounded<Func<Task>>();
-        StartWorkers(channel, 60);
+        StartWorkers(channel, 50);
         while (currentOffset < 597_500_000)
         {
             using var scope = scopeFactory.CreateScope();
@@ -130,22 +151,6 @@ public class SellsCollector : BackgroundService
             });
             tag = batch.LastOrDefault()?.Tag;
         }
-        logger.LogInformation($"Finished completely");
-        await Task.Delay(1000);
-
-        while (!stoppingToken.IsCancellationRequested)
-            await Coflnet.Kafka.KafkaConsumer.ConsumeBatch<SaveAuction>(
-                    config,
-                    new string[] { config["TOPICS:SOLD_AUCTION"], config["TOPICS:NEW_AUCTION"] },
-                    async ab =>
-                    {
-                        await InsertSells(ab);
-                        consumeCount.Inc(ab.Count());
-                    },
-                    stoppingToken,
-                    "sky-auctions",
-                    50
-            );
     }
 
     private async Task InsertSells(IEnumerable<SaveAuction> ab)
