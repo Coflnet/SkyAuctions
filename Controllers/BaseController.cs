@@ -35,7 +35,18 @@ public class AuctionController : ControllerBase
     /// <returns></returns>
     [HttpPost]
     [Route("{uuid}")]
-    public async Task<SaveAuction> TrackFlip(string uuid)
+    public async Task<SaveAuction[]> GetAuctions(string uuid)
+    {
+        return await scyllaService.GetAuction(Guid.Parse(uuid));
+    }
+    /// <summary>
+    /// Gets legacy saveauction by uuid
+    /// </summary>
+    /// <param name="uuid"></param>
+    /// <returns></returns>
+    [HttpGet]
+    [Route("{uuid}")]
+    public async Task<SaveAuction> GetAuction(string uuid)
     {
         var auctions = await scyllaService.GetAuction(Guid.Parse(uuid));
         Response.Headers.Add("X-Total-Count", auctions.Length.ToString());
