@@ -37,7 +37,9 @@ public class AuctionController : ControllerBase
     [Route("{uuid}")]
     public async Task<SaveAuction> TrackFlip(string uuid)
     {
-        return await scyllaService.GetAuction(Guid.Parse(uuid));
+        var auctions = await scyllaService.GetAuction(Guid.Parse(uuid));
+        Response.Headers.Add("X-Total-Count", auctions.Length.ToString());
+        return auctions.First();
     }
     [HttpPost]
     [Route("/import/offset")]

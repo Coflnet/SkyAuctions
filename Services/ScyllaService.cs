@@ -162,13 +162,11 @@ public class ScyllaService
         };
     }
 
-    public async Task<SaveAuction> GetAuction(Guid uuid)
+    public async Task<SaveAuction[]> GetAuction(Guid uuid)
     {
         var result = await AuctionsTable.Where(a => a.Uuid == uuid).ExecuteAsync();
-        var auction = result.FirstOrDefault();
-        if (auction == null)
-            return null;
-        return CassandraToOld(auction);
+        var auctions = result.ToArray();
+        return auctions.Select(CassandraToOld).ToArray();
     }
 
     private static SaveAuction CassandraToOld(CassandraAuction auction)
