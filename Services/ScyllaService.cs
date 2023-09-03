@@ -291,12 +291,12 @@ public class ScyllaService
         foreach (var a in auctions)
         {
             statement = AuctionsTable.Insert(ToCassandra(a));
-            var time = a.Bids.Select(b => b.Timestamp).DefaultIfEmpty(a.Start).Max();
+            var time = a.Bids?.Select(b => b.Timestamp).DefaultIfEmpty(a.Start).Max() ?? a.Start;
             statement.SetTimestamp(time);
             batch.Add(statement);
         }
         batch.SetRoutingKey(statement.RoutingKey);
-        await Session.ExecuteAsync(batch).ConfigureAwait(false);
+        await Session.ExecuteAsync(batch);
     }
 
     private async Task AssignExistingData(IEnumerable<SaveAuction> auctions)

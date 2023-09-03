@@ -168,7 +168,15 @@ public class SellsCollector : BackgroundService
         });
         await Parallel.ForEachAsync(ab.GroupBy(a => a.Tag).Select(g => g.Batch(10)).SelectMany(g => g), async (a, c) =>
         {
-            await scyllaService.InsertAuctionsOfTag(a);
+            try
+            {
+                await scyllaService.InsertAuctionsOfTag(a);
+            }
+            catch (System.Exception)
+            {
+                logger.LogError($"Error while inserting {a.First().Tag}\n{Newtonsoft.Json.JsonConvert.SerializeObject(a)}");
+                throw;
+            }
         });
         await Task.WhenAll(bidsTask);
     }
