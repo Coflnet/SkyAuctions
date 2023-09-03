@@ -45,6 +45,7 @@ public class SellsCollector : BackgroundService
     /// <returns></returns>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        await scyllaService.Create();
         //wait Migrate();
         logger.LogInformation($"Finished completely");
         await Task.Delay(1000);
@@ -66,7 +67,6 @@ public class SellsCollector : BackgroundService
 
     private async Task Migrate()
     {
-        await scyllaService.Create();
         var hadMore = true;
         currentOffset = await CacheService.Instance.GetFromRedis<int>(RedisProgressKey);
         logger.LogInformation($"Starting at {currentOffset}");
