@@ -61,7 +61,7 @@ public class SellsCollector : BackgroundService
                     },
                     stoppingToken,
                     "sky-auctions",
-                    50
+                    100
             );
     }
 
