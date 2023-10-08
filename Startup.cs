@@ -19,6 +19,8 @@ using Microsoft.OpenApi.Models;
 using Prometheus;
 using System.Security.Cryptography;
 using StackExchange.Redis;
+using Coflnet.Sky.Filter;
+using Coflnet.Sky.PlayerName.Client.Api;
 
 namespace Coflnet.Sky.Auctions;
 public class Startup
@@ -106,6 +108,9 @@ public class Startup
             return session;
         });
         services.AddSingleton<ScyllaService>();
+        services.AddSingleton<QueryService>();
+        services.AddSingleton<FilterEngine>();
+        services.AddSingleton<IPlayerNameApi>(di => new PlayerNameApi(Configuration["PLAYERNAME_BASE_URL"]));
         services.AddResponseCaching();
         services.AddResponseCompression();
     }

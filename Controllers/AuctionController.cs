@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using System.Collections;
 using Coflnet.Sky.Auctions.Services;
 using Coflnet.Sky.Core;
+using System.Collections.Generic;
 
 namespace Coflnet.Sky.Auctions.Controllers;
 
@@ -18,14 +19,16 @@ namespace Coflnet.Sky.Auctions.Controllers;
 public class AuctionController : ControllerBase
 {
     private readonly ScyllaService scyllaService;
+    private readonly QueryService queryService;
 
     /// <summary>
     /// Creates a new instance of <see cref="AuctionController"/>
     /// </summary>
     /// <param name="service"></param>
-    public AuctionController(ScyllaService service)
+    public AuctionController(ScyllaService service, QueryService queryService)
     {
         this.scyllaService = service;
+        this.queryService = queryService;
     }
 
     /// <summary>
@@ -51,6 +54,17 @@ public class AuctionController : ControllerBase
         var auctions = await scyllaService.GetAuction(Guid.Parse(uuid));
         Response.Headers.Add("X-Total-Count", auctions.Length.ToString());
         return auctions.First();
+    }
+    /// <summary>
+    /// Recently sold auctions for a specific item
+    /// </summary>
+    /// <param name="id"></param>
+    /// <returns></returns>
+    [HttpGet]
+    [Route("/api/auctions/tag/{itemTag}/recent/overview")]
+    public async Task<IEnumerable<ItemPrices.AuctionPreview>> GetRecentOverview(string itemTag, [FromQuery] Dictionary<string, string> query)
+    {
+        return await queryService.GetRecentOverview(itemTag, query);
     }
     [HttpPost]
     [Route("/import/offset")]

@@ -17,7 +17,26 @@ namespace Coflnet.Sky.Auctions;
 public class ScyllaService
 {
     public Cassandra.ISession Session { get; set; }
-    private Table<CassandraAuction> AuctionsTable { get; set; }
+    private Table<CassandraAuction> _auctionsTable;
+    public Table<CassandraAuction> AuctionsTable
+    {
+        get
+        {
+            if (_auctionsTable == null)
+            {
+                _auctionsTable = GetAuctionsTable();
+            }
+            return _auctionsTable;
+        }
+        set
+        {
+            _auctionsTable = value;
+        }
+    }
+    /// <summary>
+    /// Table of past queries for quick access
+    /// </summary>
+    public Table<QueryArchive> QueryArchiveTable { get; set; }
     private Table<CassandraBid> BidsTable { get; set; }
     private ILogger<ScyllaService> Logger { get; set; }
     public ScyllaService(Cassandra.ISession session, ILogger<ScyllaService> logger)
@@ -33,11 +52,14 @@ public class ScyllaService
         //Session.Execute("DROP TABLE IF EXISTS auctions");
         var auctionsTable = GetAuctionsTable();
         var bidsTable = GetBidsTable();
+        var queryTable = GetQueryArchiveTable();
         await auctionsTable.CreateIfNotExistsAsync();
         await bidsTable.CreateIfNotExistsAsync();
+        await queryTable.CreateIfNotExistsAsync();
 
         AuctionsTable = auctionsTable;
         BidsTable = bidsTable;
+        QueryArchiveTable = queryTable;
         Logger.LogInformation("Created tables");
         await Task.Delay(1000);
     }
@@ -134,7 +156,7 @@ public class ScyllaService
             .Define(new Map<CassandraAuction>()
             .PartitionKey(t => t.Tag)
             // issold for selecting not sold auctions and checking if they were sold at a different time, auction uuid to allow storing auctions to be sold in the same second
-            .ClusteringKey(new Tuple<string, SortOrder>("issold", SortOrder.Ascending), new("end", SortOrder.Ascending), new("uuid", SortOrder.Descending))
+            .ClusteringKey(new Tuple<string, SortOrder>("issold", SortOrder.Ascending), new("end", SortOrder.Descending), new("uuid", SortOrder.Descending))
             // secondary index
             .Column(t => t.Uuid, cm => cm.WithSecondaryIndex())
             .Column(t => t.Auctioneer, cm => cm.WithSecondaryIndex())
@@ -143,6 +165,16 @@ public class ScyllaService
             .Column(t => t.Bids, cm => cm.Ignore())
         );
         return new Table<CassandraAuction>(Session, mapping, "auctions");
+    }
+
+    private Table<QueryArchive> GetQueryArchiveTable()
+    {
+        var mapping = new MappingConfiguration()
+            .Define(new Map<QueryArchive>()
+            .PartitionKey(t => t.Tag, t => t.FilterKey)
+            .ClusteringKey(t => t.End)
+        );
+        return new Table<QueryArchive>(Session, mapping, "query_archive");
     }
 
     public async Task InsertBid(SaveBids bid, Guid guid)
@@ -169,11 +201,11 @@ public class ScyllaService
         return auctions.Select(CassandraToOld).ToArray();
     }
 
-    private static SaveAuction CassandraToOld(CassandraAuction auction)
+    public static SaveAuction CassandraToOld(CassandraAuction auction)
     {
         return new SaveAuction()
         {
-            AuctioneerId = auction.Auctioneer.ToString(),
+            AuctioneerId = auction.Auctioneer.ToString("N"),
             Bin = auction.Bin,
             Category = (Category)Enum.Parse(typeof(Category), auction.Category),
             Coop = auction.Coop,
@@ -186,7 +218,7 @@ public class ScyllaService
             FlatenedNBT = auction.NbtLookup,
             ItemCreatedAt = auction.ItemCreatedAt,
             ProfileId = auction.ProfileId.ToString(),
-            Uuid = auction.Uuid.ToString(),
+            Uuid = auction.Uuid.ToString("N"),
             Count = auction.Count,
 
             AnvilUses = (short)int.Parse(auction.NbtLookup.GetValueOrDefault("anvil_uses", "0")),
@@ -351,9 +383,9 @@ public class ScyllaService
     internal async Task<PriceSumary> GetSumary(string itemTag, Dictionary<string, string> dictionary)
     {
         var days = 2d;
-        if(dictionary.Remove("days", out var d))
+        if (dictionary.Remove("days", out var d))
         {
-            if(!double.TryParse(d, out days))
+            if (!double.TryParse(d, out days))
             {
                 days = 2d;
             }
@@ -365,7 +397,7 @@ public class ScyllaService
         var result = new FilterEngine().Filter(batch.Select(CassandraToOld), dictionary).ToList();
         if (result.Count == 0)
             return new PriceSumary();
-        if(result.GroupBy(a=>a.Uuid).Any(g=>g.Count() > 1))
+        if (result.GroupBy(a => a.Uuid).Any(g => g.Count() > 1))
             throw new Exception("Duplicate auctions");
         return new PriceSumary()
         {

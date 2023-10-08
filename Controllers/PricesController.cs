@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Coflnet.Sky.Auctions.Models;
 using System.Collections.Generic;
 using Coflnet.Sky.Core;
+using System.Linq;
 
 namespace Coflnet.Sky.Auctions.Controllers;
 
@@ -11,10 +12,12 @@ namespace Coflnet.Sky.Auctions.Controllers;
 public class PricesController : ControllerBase
 {
     private readonly ScyllaService scyllaService;
+    private readonly QueryService queryService;
 
-    public PricesController(ScyllaService scyllaService)
+    public PricesController(ScyllaService scyllaService, QueryService queryService)
     {
         this.scyllaService = scyllaService;
+        this.queryService = queryService;
     }
 
     /// <summary>
@@ -34,8 +37,8 @@ public class PricesController : ControllerBase
     [Route("item/price/{itemTag}/history")]
     [HttpGet]
     [ResponseCache(Duration = 180, Location = ResponseCacheLocation.Any, NoStore = false, VaryByQueryKeys = new string[] { "*" })]
-    public Task<List<SaveAuction>> GetHistory(string itemTag, [FromQuery] IDictionary<string, string> query)
+    public Task<IEnumerable<QueryArchive>> GetHistory(string itemTag, [FromQuery] IDictionary<string, string> query)
     {
-        return scyllaService.GetRecentBatch(itemTag);
+        return queryService.GetPriceSumary(itemTag, query.ToDictionary(x => x.Key, x => x.Value));
     }
 }
