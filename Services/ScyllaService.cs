@@ -349,7 +349,10 @@ public class ScyllaService
         foreach (var a in result)
         {
             if (!lookup.Contains(a.Uuid))
+            {
+                Logger.LogError($"Auction {a.Uuid} not found in lookup, first match {ids.FirstOrDefault()}");
                 continue;
+            }
             var match = lookup[a.Uuid].First();
             match.Start = a.Start;
             match.Count = a.Count;
