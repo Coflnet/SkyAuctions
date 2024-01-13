@@ -334,7 +334,7 @@ public class ScyllaService
     private async Task AssignExistingData(IEnumerable<SaveAuction> auctions)
     {
         // auctions without start are from the sells endpoint and are missing some info that might was available when the auction was created
-        var lookup = auctions.ToList()
+        var lookup = auctions
             .Where(a => a.Start == default && a.End > DateTime.UtcNow - TimeSpan.FromDays(14))
             .ToLookup(a => Guid.Parse(a.Uuid));
         if (!lookup.Any())
@@ -344,7 +344,7 @@ public class ScyllaService
         var minEnd = lookup.Select(a => a.Min(a => a.End)).Min();
         var maxEnd = lookup.Select(a => a.Max(a => a.End)).Max() + TimeSpan.FromDays(14);
         var tag = lookup.First().First().Tag;
-        var result = await AuctionsTable.Where(a => ids.Contains(a.Uuid) && !a.IsSold && a.End < maxEnd && a.End > minEnd && a.Tag == tag).AllowFiltering().ExecuteAsync();
+        var result = (await AuctionsTable.Where(a => ids.Contains(a.Uuid) && !a.IsSold && a.End < maxEnd && a.End > minEnd && a.Tag == tag).AllowFiltering().ExecuteAsync()).ToList();
         Logger.LogInformation($"Found {result.Count()} auctions to retrofit");
         foreach (var a in result)
         {
