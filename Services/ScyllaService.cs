@@ -334,7 +334,7 @@ public class ScyllaService
     private async Task AssignExistingData(IEnumerable<SaveAuction> auctions)
     {
         // auctions without start are from the sells endpoint and are missing some info that might was available when the auction was created
-        var lookup = auctions
+        var lookup = auctions.ToList()
             .Where(a => a.Start == default && a.End > DateTime.UtcNow - TimeSpan.FromDays(14))
             .ToLookup(a => Guid.Parse(a.Uuid));
         if (!lookup.Any())
