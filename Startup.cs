@@ -110,6 +110,11 @@ public class Startup
         services.AddSingleton<ScyllaService>();
         services.AddSingleton<QueryService>();
         services.AddSingleton<FilterEngine>();
+        services.AddTransient<RestoreService>();
+        services.AddTransient<HypixelContext>(options =>
+        {
+            return new HypixelContext();
+        });
         services.AddSingleton<IPlayerNameApi>(di => new PlayerNameApi(Configuration["PLAYERNAME_BASE_URL"]));
         services.AddResponseCaching();
         services.AddResponseCompression();

@@ -9,6 +9,7 @@ using Cassandra.Mapping;
 using Coflnet.Sky.Auctions.Models;
 using Coflnet.Sky.Core;
 using Coflnet.Sky.Filter;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using static Coflnet.Sky.Core.Enchantment;
@@ -201,6 +202,33 @@ public class ScyllaService
         return auctions.Select(CassandraToOld).ToArray();
     }
 
+    public async Task<SaveAuction> GetCombinedAuction(Guid uuid)
+    {
+        return CombineVersions(await GetAuction(uuid));
+    }
+
+    public SaveAuction CombineVersions(SaveAuction[] auctions)
+    {
+        var combined = auctions.Aggregate((a, b) =>
+        {
+            // add unique bids
+            a.Bids.AddRange(b.Bids.Where(b => !a.Bids.Any(a => a.Amount == b.Amount)));
+            // add unique coop members
+            if (a.CoopMembers?.Count == 0) // not present in sells endpoint
+                a.CoopMembers = b.CoopMembers;
+            if (a.StartingBid == 0) // not present in sells endpoint
+                a.StartingBid = b.StartingBid;
+            if (a.Category == Category.UNKNOWN) // not present in sells endpoint
+                a.Category = b.Category;
+            if (a.Start == default) // not present in sells endpoint
+                a.Start = b.Start;
+            if (a.ProfileId == a.AuctioneerId) // it defaults to the auctioneer id
+                a.ProfileId = b.ProfileId;
+            return a;
+        });
+        return combined;
+    }
+
     public static SaveAuction CassandraToOld(CassandraAuction auction)
     {
         return new SaveAuction()
@@ -217,7 +245,7 @@ public class ScyllaService
             StartingBid = auction.StartingBid,
             FlatenedNBT = auction.NbtLookup,
             ItemCreatedAt = auction.ItemCreatedAt,
-            ProfileId = auction.ProfileId.ToString(),
+            ProfileId = auction.ProfileId.ToString("N"),
             Uuid = auction.Uuid.ToString("N"),
             Count = auction.Count,
 
@@ -240,16 +268,18 @@ public class ScyllaService
                 Level = (byte)e.Value,
                 Type = (EnchantmentType)Enum.Parse(typeof(EnchantmentType), e.Key),
             }).ToList(),
-            UId = auction.ItemUid,
+            UId = AuctionService.Instance.GetId(auction.Uuid.ToString()),
             Start = auction.Start,
         };
     }
 
     public async Task<IEnumerable<SaveAuction>> GetRecentFromPlayer(Guid playerUuid, DateTime before, int amount)
     {
-        var statement = AuctionsTable.Where(a => a.Auctioneer == playerUuid && a.End < before && a.End > before - TimeSpan.FromDays(5)).AllowFiltering().Take(amount);
+        var minTime = before - TimeSpan.FromDays(30);
+        var statement = AuctionsTable.Where(a => a.Auctioneer == playerUuid).AllowFiltering().Take(amount);
         statement.EnableTracing();
-        var result = await statement.ExecuteAsync();
+        var result = (await statement.ExecuteAsync()).ToList();
+        Console.WriteLine($"Received {result.Count} auctions");
         Console.WriteLine("\n" + statement.QueryTrace + "\n" + statement.QueryTrace.Events.Count);
         // log the query trace formatted
         Console.WriteLine(JsonConvert.SerializeObject(statement.QueryTrace.Events.Select(s => s.ToString()), Formatting.Indented));
@@ -361,6 +391,7 @@ public class ScyllaService
             match.ProfileId = a.ProfileId.ToString();
             match.Bin = a.Bin;
             match.StartingBid = a.StartingBid;
+
             Console.WriteLine($"retrofitted {match.Uuid} {match.ItemName} {match.Start} {match.Count} {match.ItemCreatedAt} {match.ProfileId} {match.Bin} {match.StartingBid}");
 
             //statement = AuctionsTable.Delete(a);

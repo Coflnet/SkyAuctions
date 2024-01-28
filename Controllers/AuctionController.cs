@@ -1,10 +1,8 @@
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Logging;
 using System;
 using System.Linq;
 using Microsoft.EntityFrameworkCore;
-using System.Collections;
 using Coflnet.Sky.Auctions.Services;
 using Coflnet.Sky.Core;
 using System.Collections.Generic;
@@ -53,7 +51,7 @@ public class AuctionController : ControllerBase
     {
         var auctions = await scyllaService.GetAuction(Guid.Parse(uuid));
         Response.Headers.Add("X-Total-Count", auctions.Length.ToString());
-        return auctions.First();
+        return scyllaService.CombineVersions(auctions);
     }
     /// <summary>
     /// Recently sold auctions for a specific item
@@ -81,5 +79,14 @@ public class AuctionController : ControllerBase
                 .Include(a => a.Bids).Include(a => a.Enchantments).Include(a => a.NbtData).Include(a => a.NBTLookup).Include(a => a.CoopMembers)
                 .FirstAsync();
         await scyllaService.InsertAuction(auction);
+    }
+
+    [HttpGet]
+    [Route("/api/player/{uuid}/auctions")]
+    public async Task<IEnumerable<SaveAuction>> GetPlayerAuctions(string uuid, DateTime end, int amount = 10)
+    {
+        if(end == default)
+            end = DateTime.UtcNow;
+        return await scyllaService.GetRecentFromPlayer(Guid.Parse(uuid), end, amount);
     }
 }
