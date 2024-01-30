@@ -95,7 +95,7 @@ public class ScyllaService
         await Session.ExecuteAsync(batch).ConfigureAwait(false);
     }
 
-    private static CassandraAuction ToCassandra(SaveAuction auction)
+    public static CassandraAuction ToCassandra(SaveAuction auction)
     {
         var auctionUuid = Guid.Parse(auction.Uuid);
         auction = new SaveAuction(auction);
@@ -254,10 +254,10 @@ public class ScyllaService
             Bids = auction.Bids.Select(b => new SaveBids()
             {
                 Amount = b.Amount,
-                AuctionId = b.AuctionUuid.ToString(),
-                Bidder = b.BidderUuid.ToString(),
+                AuctionId = b.AuctionUuid.ToString("N"),
+                Bidder = b.BidderUuid.ToString("N"),
                 Timestamp = b.Timestamp,
-                ProfileId = b.ProfileId.ToString(),
+                ProfileId = b.ProfileId.ToString("N"),
             }).ToList(),
             NbtData = new NbtData()
             {

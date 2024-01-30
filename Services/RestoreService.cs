@@ -5,6 +5,7 @@ using Cassandra.Data.Linq;
 using Coflnet.Sky.Core;
 using Microsoft.EntityFrameworkCore;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace Coflnet.Sky.Auctions;
 
@@ -46,15 +47,47 @@ public class RestoreService
                         .FirstAsync();
         if (auction == null)
             return; // already deleted
-        var archivedVersion = JsonConvert.SerializeObject(await archivedVersionTask);
-        var toBeDeleted = JsonConvert.SerializeObject(auction);
-        if (archivedVersion != toBeDeleted)
+        var archivedObj = await archivedVersionTask;
+        archivedObj.FlatenedNBT = null;
+        AdjustForOptimizations(archivedObj);
+        var compareAuction = ScyllaService.CassandraToOld(ScyllaService.ToCassandra(auction));
+        AdjustForOptimizations(compareAuction);
+        var settings = new JsonSerializerSettings()
         {
+            DateTimeZoneHandling = DateTimeZoneHandling.Utc
+        };
+        var archivedVersion = JsonConvert.SerializeObject(archivedObj);
+        var toBeDeleted = JsonConvert.SerializeObject(compareAuction);
+        if (toBeDeleted != archivedVersion)
+        {
+            Console.WriteLine($"Archived version: {archivedVersion}");
+            Console.WriteLine($"To be deleted   : {toBeDeleted}");
             throw new CoflnetException("no_match", "Archived version does not match to be deleted version");
         }
 
         context.Auctions.Remove(auction);
         await context.SaveChangesAsync();
+
+        static void AdjustForOptimizations(SaveAuction archivedObj)
+        {
+            if (archivedObj.ProfileId == archivedObj.AuctioneerId)
+                archivedObj.ProfileId = null;
+            foreach (var bid in archivedObj.Bids)
+            {
+                if (bid.ProfileId == bid.Bidder)
+                    bid.ProfileId = null;
+                // set to be utc don't change timezone 
+                if (bid.Timestamp.Kind != DateTimeKind.Utc)
+                {
+                    // get offset of current locale and revert it
+                    bid.Timestamp = bid.Timestamp.AddHours(-TimeZoneInfo.Local.GetUtcOffset(bid.Timestamp).Hours);
+                    bid.Timestamp = DateTime.SpecifyKind(bid.Timestamp, DateTimeKind.Utc);
+                }
+            }
+            archivedObj.Bids = archivedObj.Bids.OrderBy(b => b.Amount).ToList();
+            archivedObj.Enchantments = archivedObj.Enchantments.OrderBy(e => e.Type).ToList();
+            archivedObj.FlatenedNBT = archivedObj.FlatenedNBT.OrderBy(n => n.Key).ToDictionary(n => n.Key, n => n.Value);
+        }
     }
 
     /// <summary>

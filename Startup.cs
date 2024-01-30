@@ -107,6 +107,7 @@ public class Startup
             Console.WriteLine("Connected to Cassandra");
             return session;
         });
+        services.AddHostedService<DeletingBackGroundService>();
         services.AddSingleton<ScyllaService>();
         services.AddSingleton<QueryService>();
         services.AddSingleton<FilterEngine>();
