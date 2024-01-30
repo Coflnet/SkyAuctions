@@ -65,7 +65,12 @@ public class RestoreService
             throw new CoflnetException("no_match", "Archived version does not match to be deleted version");
         }
 
-        context.Auctions.Remove(auction);
+        context.Remove(auction);
+        context.RemoveRange(auction.Enchantments);
+        context.RemoveRange(auction.NbtData);
+        context.RemoveRange(auction.NBTLookup);
+        context.RemoveRange(auction.CoopMembers);
+        context.RemoveRange(auction.Bids);
         await context.SaveChangesAsync();
 
         static void AdjustForOptimizations(SaveAuction archivedObj)
