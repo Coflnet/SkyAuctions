@@ -9,6 +9,7 @@ using Cassandra.Mapping;
 using Coflnet.Sky.Auctions.Models;
 using Coflnet.Sky.Core;
 using Coflnet.Sky.Filter;
+using fNbt.Tags;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
@@ -99,14 +100,14 @@ public class ScyllaService
     {
         var auctionUuid = Guid.Parse(auction.Uuid);
         auction = new SaveAuction(auction);
-        var root = auction.NbtData?.Root() ?? new fNbt.NbtCompound("i");
+        var root = auction.NbtData?.Root() ?? new NbtCompound("i");
         if (auction.AnvilUses > 0)
         {
-            root.Add(new fNbt.NbtInt("anvil_uses", auction.AnvilUses));
+            root.Add(new NbtInt("anvil_uses", auction.AnvilUses));
         }
         if (auction.Reforge != ItemReferences.Reforge.None)
         {
-            root.Add(new fNbt.NbtString("modifier", auction.Reforge.ToString()));
+            root.Add(new NbtString("modifier", auction.Reforge.ToString()));
         }
         auction.NbtData = new() { data = NBT.Bytes(root) };
         auction.SetFlattenedNbt(NBT.FlattenNbtData(auction.NbtData.Data));
