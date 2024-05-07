@@ -19,14 +19,14 @@ namespace Coflnet.Sky.Auctions;
 public class ScyllaService
 {
     public Cassandra.ISession Session { get; set; }
-    private Table<CassandraAuction> _auctionsTable;
-    public Table<CassandraAuction> AuctionsTable
+    private Table<ScyllaAuction> _auctionsTable;
+    public Table<ScyllaAuction> AuctionsTable
     {
         get
         {
             if (_auctionsTable == null)
             {
-                _auctionsTable = GetAuctionsTable();
+                _auctionsTable = GetWeeklyAuctionsTable();
             }
             return _auctionsTable;
         }
@@ -52,7 +52,7 @@ public class ScyllaService
         Logger.LogInformation("Creating tables");
         // drop tables
         //Session.Execute("DROP TABLE IF EXISTS auctions");
-        var auctionsTable = GetAuctionsTable();
+        var auctionsTable = GetWeeklyAuctionsTable();
         var bidsTable = GetBidsTable();
         var queryTable = GetQueryArchiveTable();
         await auctionsTable.CreateIfNotExistsAsync();
@@ -70,7 +70,7 @@ public class ScyllaService
     {
         if (auction.AuctioneerId == null && auction.Tag == null && auction.HighestBidAmount == 0)
             return;
-        CassandraAuction converted = ToCassandra(auction);
+        ScyllaAuction converted = ToCassandra(auction);
         // check if exists
         var existing = (await AuctionsTable.Where(a => a.Tag == converted.Tag && a.IsSold == converted.IsSold && a.End == converted.End && a.Uuid == converted.Uuid).Select(a => a.Auctioneer).ExecuteAsync()).FirstOrDefault();
         if (existing != null && converted.Auctioneer == existing)
@@ -96,7 +96,7 @@ public class ScyllaService
         await Session.ExecuteAsync(batch).ConfigureAwait(false);
     }
 
-    public static CassandraAuction ToCassandra(SaveAuction auction)
+    public static ScyllaAuction ToCassandra(SaveAuction auction)
     {
         var auctionUuid = Guid.Parse(auction.Uuid);
         auction = new SaveAuction(auction);
@@ -122,7 +122,8 @@ public class ScyllaService
         var itemUuid = Guid.Parse(auction.FlatenedNBT.GetValueOrDefault("uuid") ?? "00000000-0000-0000-0000-" + auction.FlatenedNBT.GetValueOrDefault("uid", "000000000000"));
         var isSold = auction.HighestBidAmount > 0 && auction.End < DateTime.UtcNow;
         var sellerUuid = Guid.Parse(auction.AuctioneerId ?? Guid.Empty.ToString());
-        var converted = new CassandraAuction()
+        short monthsSine = GetWeeksSinceStart(auction.End);
+        var converted = new ScyllaAuction()
         {
             Uuid = auctionUuid,
             Auctioneer = sellerUuid,
@@ -147,12 +148,20 @@ public class ScyllaService
             ProfileId = Guid.Parse(auction.ProfileId ?? auction.AuctioneerId),
             NbtLookup = auction.FlatenedNBT,
             Count = auction.Count,
-            Bids = bids
+            Bids = bids,
+            TimeKey = monthsSine,
+            AuctionUid = auction.UId,
         };
         return converted;
     }
 
-    private Table<CassandraAuction> GetAuctionsTable()
+    public static short GetWeeksSinceStart(DateTime targetDate)
+    {
+        var startDate = new DateTime(2019, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        return (short)((targetDate.Ticks - startDate.Ticks) / TimeSpan.FromDays(7).Ticks);
+    }
+
+    public Table<CassandraAuction> GetAuctionsTable()
     {
         var mapping = new MappingConfiguration()
             .Define(new Map<CassandraAuction>()
@@ -167,6 +176,22 @@ public class ScyllaService
             .Column(t => t.Bids, cm => cm.Ignore())
         );
         return new Table<CassandraAuction>(Session, mapping, "auctions");
+    }
+
+    private Table<ScyllaAuction> GetWeeklyAuctionsTable()
+    {
+        var mapping = new MappingConfiguration()
+            .Define(new Map<ScyllaAuction>()
+            .PartitionKey(t => t.Tag, t => t.TimeKey)
+            .ClusteringKey(new Tuple<string, SortOrder>("issold", SortOrder.Ascending), new("end", SortOrder.Descending), new("itemuid", SortOrder.Descending))
+            // secondary index
+            .Column(t => t.AuctionUid, cm => cm.WithSecondaryIndex())
+            .Column(t => t.ItemUid, cm => cm.WithSecondaryIndex())
+            .Column(t => t.Auctioneer, cm => cm.WithSecondaryIndex())
+            .Column(t => t.HighestBidder, cm => cm.WithSecondaryIndex())
+            .Column(t => t.Bids, cm => cm.Ignore())
+        );
+        return new Table<ScyllaAuction>(Session, mapping, "weekly_auctions");
     }
 
     private Table<QueryArchive> GetQueryArchiveTable()
@@ -198,7 +223,8 @@ public class ScyllaService
 
     public async Task<SaveAuction[]> GetAuction(Guid uuid)
     {
-        var result = await AuctionsTable.Where(a => a.Uuid == uuid).ExecuteAsync();
+        var uid = AuctionService.Instance.GetId(uuid.ToString());
+        var result = await AuctionsTable.Where(a => a.AuctionUid == uid).ExecuteAsync();
         var auctions = result.ToArray();
         return auctions.Select(CassandraToOld).ToArray();
     }
@@ -428,7 +454,10 @@ public class ScyllaService
             // max 2 days, positive
             days = Math.Min(2, Math.Max(0, days));
         }
-        var batch = await AuctionsTable.Where(a => a.Tag == itemTag && a.End > DateTime.UtcNow - TimeSpan.FromDays(days) && a.End < DateTime.UtcNow && a.IsSold).ExecuteAsync();
+        var currentMonth = GetWeeksSinceStart(DateTime.UtcNow);
+        var previousMonth = currentMonth - 1;
+        var batch = await AuctionsTable.Where(a => a.Tag == itemTag && (a.TimeKey == currentMonth || a.TimeKey == previousMonth)
+                    && a.End > DateTime.UtcNow - TimeSpan.FromDays(days) && a.End < DateTime.UtcNow && a.IsSold).ExecuteAsync();
 
         var result = new FilterEngine().Filter(batch.Select(CassandraToOld), dictionary).ToList();
         if (result.Count == 0)
@@ -447,7 +476,9 @@ public class ScyllaService
     }
     public async Task<List<SaveAuction>> GetRecentBatch(string itemTag)
     {
-        var batch = await AuctionsTable.Where(a => a.Tag == itemTag && a.End > DateTime.UtcNow - TimeSpan.FromDays(2) && a.IsSold).OrderByDescending(a => a.End).Take(1000).ExecuteAsync();
+        var currentMonth = GetWeeksSinceStart(DateTime.UtcNow);
+        var batch = await AuctionsTable.Where(a => a.Tag == itemTag && a.TimeKey == currentMonth && a.End > DateTime.UtcNow - TimeSpan.FromDays(2) && a.IsSold)
+                    .OrderByDescending(a => a.End).Take(1000).ExecuteAsync();
         return batch.Select(CassandraToOld).ToList();
     }
 }

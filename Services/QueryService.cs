@@ -32,7 +32,7 @@ public class QueryService
         var historyTable = scyllaService.QueryArchiveTable;
         var special = new[] { "EndAfter", "EndBefore" };
         var key = string.Concat(query.OrderBy(kv => kv.Key).Where(q => !special.Contains(q.Key)).Select(kv => kv.Key + kv.Value));
-        
+
         var end = DateTime.UtcNow;
         if (query.ContainsKey("EndBefore"))
         {
@@ -46,11 +46,11 @@ public class QueryService
         }
         var history = (await historyTable.Where(h => h.FilterKey == key && h.Tag == itemTag && h.End > start && h.End <= end).ExecuteAsync()).ToList();
         var expected = (int)(end - start).TotalDays;
-        if(history.Count < expected)
+        if (history.Count < expected)
         {
             logger.LogInformation($"Found {history.Count} days of history for {itemTag} in the last {expected} days");
             var lookup = history.ToLookup(h => h.End);
-            var expectedEnds = Enumerable.Range(0, expected).Select(i => DateTime.UtcNow.RoundDown(TimeSpan.FromDays(1)).AddDays(-i)).Where(d=>!lookup.Contains(d)).ToList();
+            var expectedEnds = Enumerable.Range(0, expected).Select(i => DateTime.UtcNow.RoundDown(TimeSpan.FromDays(1)).AddDays(-i)).Where(d => !lookup.Contains(d)).ToList();
             foreach (var missing in expectedEnds)
             {
                 var sumary = await AggregateDay(itemTag, query, key, missing);
@@ -103,7 +103,8 @@ public class QueryService
     {
         var table = scyllaService.AuctionsTable;
         var start = end.AddDays(-1);
-        var baseData = await table.Where(a => a.End > start && a.End <= end && a.IsSold == true && a.Tag == tag).ExecuteAsync();
+        var monthId = ScyllaService.GetWeeksSinceStart(end);
+        var baseData = await table.Where(a => a.End > start && a.End <= end && a.IsSold == true && a.Tag == tag && a.TimeKey == monthId).ExecuteAsync();
         var result = AddFilter(query, baseData).ToList();
         var prices = result.Select(a => a.HighestBidAmount).ToList();
         var sumary = new QueryArchive

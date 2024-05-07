@@ -71,3 +71,13 @@ public class CassandraAuction : ICassandraItem
     public int Count { get; set; }
     public int? Color { get; set; }
 }
+
+public class ScyllaAuction : CassandraAuction
+{
+    /// <summary>
+    /// Partition key for the item
+    /// Months since 2019-01-01
+    /// </summary>
+    public short TimeKey { get; set; }
+    public long AuctionUid { get; set; }
+}

@@ -14,6 +14,9 @@ using System;
 using System.Threading.Channels;
 using MoreLinq;
 using System.Collections.Generic;
+using Coflnet.Sky.SkyAuctionTracker.Services;
+using System.Runtime.CompilerServices;
+using StackExchange.Redis;
 
 namespace Coflnet.Sky.Auctions.Services;
 
@@ -46,12 +49,12 @@ public class SellsCollector : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await scyllaService.Create();
-        //wait Migrate();
+        await MigrateToMonthly();
         logger.LogInformation($"Finished completely");
         await Task.Delay(1000);
 
         while (!stoppingToken.IsCancellationRequested)
-            await Coflnet.Kafka.KafkaConsumer.ConsumeBatch<SaveAuction>(
+            await Kafka.KafkaConsumer.ConsumeBatch<SaveAuction>(
                     config,
                     new string[] { config["TOPICS:SOLD_AUCTION"], config["TOPICS:NEW_AUCTION"] },
                     async ab =>
@@ -63,6 +66,60 @@ public class SellsCollector : BackgroundService
                     "sky-auctions",
                     100
             );
+    }
+
+    private async Task MigrateToMonthly()
+    {
+        using var scrope = scopeFactory.CreateScope();
+        var handler = new MigrationHandler<CassandraAuction, ScyllaAuction>(
+            () => scyllaService.GetAuctionsTable(),
+            scyllaService.Session,
+            scrope.ServiceProvider.GetRequiredService<ILogger<MigrationHandler<CassandraAuction, ScyllaAuction>>>(),
+            scrope.ServiceProvider.GetRequiredService<IConnectionMultiplexer>(),
+            () => scyllaService.AuctionsTable,
+            a =>
+            {
+                if (a.Id % 1000 == 1)
+                    logger.LogInformation($"Migrating {a.Uuid} {a.Tag} {a.End}");
+                return new ScyllaAuction()
+                {
+                    Auctioneer = a.Auctioneer,
+                    Bids = a.Bids,
+                    End = a.End,
+                    HighestBidAmount = a.HighestBidAmount,
+                    HighestBidder = a.HighestBidder,
+                    HighestBidderName = a.HighestBidderName,
+                    ItemBytes = a.ItemBytes,
+                    ItemCreatedAt = a.ItemCreatedAt,
+                    ItemId = a.ItemId,
+                    NbtLookup = a.NbtLookup,
+                    ProfileId = a.ProfileId,
+                    ProfileName = a.ProfileName,
+                    Start = a.Start,
+                    Tag = a.Tag,
+                    Uuid = a.Uuid,
+                    Coop = a.Coop,
+                    CoopName = a.CoopName,
+                    ExtraAttributesJson = a.ExtraAttributesJson,
+                    Extra = a.Extra,
+                    ItemLore = a.ItemLore,
+                    ItemName = a.ItemName,
+                    ItemUid = a.ItemUid,
+                    StartingBid = a.StartingBid,
+                    Tier = a.Tier,
+                    Category = a.Category,
+                    IsSold = a.IsSold,
+                    Bin = a.Bin,
+                    Enchantments = a.Enchantments
+                    ,
+                    Color = a.Color,
+                    Count = a.Count,
+                    Id = a.Id,
+                    AuctionUid = AuctionService.Instance.GetId(a.Uuid.ToString("N")),
+                    TimeKey = ScyllaService.GetWeeksSinceStart(a.End)
+                };
+            });
+        await handler.Migrate();
     }
 
     private async Task Migrate()
