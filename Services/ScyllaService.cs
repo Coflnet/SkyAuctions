@@ -402,7 +402,9 @@ public class ScyllaService
         var minEnd = lookup.Select(a => a.Min(a => a.End)).Min();
         var maxEnd = lookup.Select(a => a.Max(a => a.End)).Max() + TimeSpan.FromDays(14);
         var tag = lookup.First().First().Tag;
-        var result = (await AuctionsTable.Where(a => ids.Contains(a.Uuid) && !a.IsSold && a.End < maxEnd && a.End > minEnd && a.Tag == tag).AllowFiltering().ExecuteAsync()).ToList();
+        var currentWeek = GetWeeksSinceStart(auctions.Max(a => a.End));
+        var fourWeeksBefore = Enumerable.Range(currentWeek - 4, 4).ToList();
+        var result = (await AuctionsTable.Where(a => ids.Contains(a.Uuid) && fourWeeksBefore.Contains(a.TimeKey) && !a.IsSold && a.End < maxEnd && a.End > minEnd && a.Tag == tag).AllowFiltering().ExecuteAsync()).ToList();
         Logger.LogInformation($"Found {result.Count()} auctions to retrofit");
         foreach (var a in result)
         {
