@@ -118,8 +118,8 @@ public class ScyllaService
         var bids = auction.Bids?.Select(b => ToCassandra(b, Guid.Parse(auction.Uuid))).ToList();
         var enchants = auction.Enchantments.ToDictionary(e => e.Type == EnchantmentType.unknown ? ("unknown" + Random.Shared.Next(1, 20)) : e.Type.ToString(), e => (int)e.Level);
         var highestBidder = auction.Bids.Count == 0 ? Guid.Empty : Guid.Parse(auction.Bids.OrderByDescending(b => b.Amount).First().Bidder);
-        var itemUid = long.Parse(auction.FlatenedNBT.GetValueOrDefault("uid", "0"), System.Globalization.NumberStyles.HexNumber);
         var itemUuid = Guid.Parse(auction.FlatenedNBT.GetValueOrDefault("uuid") ?? "00000000-0000-0000-0000-" + auction.FlatenedNBT.GetValueOrDefault("uid", "000000000000"));
+        var itemUid = long.Parse(auction.FlatenedNBT.GetValueOrDefault("uid", Random.Shared.Next(1, 255).ToString("x")), System.Globalization.NumberStyles.HexNumber);
         var isSold = auction.HighestBidAmount > 0 && auction.End < DateTime.UtcNow;
         var sellerUuid = Guid.Parse(auction.AuctioneerId ?? Guid.Empty.ToString());
         short monthsSine = GetWeeksSinceStart(auction.End);
@@ -403,7 +403,7 @@ public class ScyllaService
         var maxEnd = lookup.Select(a => a.Max(a => a.End)).Max() + TimeSpan.FromDays(14);
         var tag = lookup.First().First().Tag;
         var currentWeek = GetWeeksSinceStart(auctions.Max(a => a.End));
-        var fourWeeksBefore = Enumerable.Range(currentWeek - 4, 4).ToList();
+        var fourWeeksBefore = Enumerable.Range(currentWeek - 4, 4).Select(i => (short)i).ToList();
         var result = (await AuctionsTable.Where(a => ids.Contains(a.Uuid) && fourWeeksBefore.Contains(a.TimeKey) && !a.IsSold && a.End < maxEnd && a.End > minEnd && a.Tag == tag).AllowFiltering().ExecuteAsync()).ToList();
         Logger.LogInformation($"Found {result.Count()} auctions to retrofit");
         foreach (var a in result)
