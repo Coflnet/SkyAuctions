@@ -64,7 +64,7 @@ public class SellsCollector : BackgroundService
                     },
                     stoppingToken,
                     "sky-auctions",
-                    100
+                    200
             );
     }
 
@@ -211,6 +211,10 @@ public class SellsCollector : BackgroundService
 
     private async Task InsertSells(IEnumerable<SaveAuction> ab)
     {
+        ParallelOptions options = new()
+        {
+            MaxDegreeOfParallelism = 10
+        };
         var bidsTask = Parallel.ForEachAsync(ab.SelectMany(a =>
         {
             foreach (var item in a.Bids)
@@ -218,11 +222,14 @@ public class SellsCollector : BackgroundService
                 item.AuctionId = a.Uuid;
             }
             return a.Bids;
-        }).GroupBy(g => g.Bidder).Batch(20).ToList(), async (b, c) =>
+        }).GroupBy(g => g.Bidder).Batch(20).ToList(),
+        options,
+         async (b, c) =>
         {
             await scyllaService.InsertBids(b.OrderByDescending(b => b.Count()).SelectMany(i => i));
         });
-        await Parallel.ForEachAsync(ab.GroupBy(a => a.Tag).Select(g => g.Batch(10)).SelectMany(g => g), async (a, c) =>
+        await Parallel.ForEachAsync(ab.GroupBy(a => a.Tag).Select(g => g.Batch(10)).SelectMany(g => g), options,
+        async (a, c) =>
         {
             try
             {
