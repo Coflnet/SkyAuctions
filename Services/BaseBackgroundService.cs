@@ -104,7 +104,7 @@ public class SellsCollector : BackgroundService
                     Extra = a.Extra,
                     ItemLore = a.ItemLore,
                     ItemName = a.ItemName,
-                    ItemUid = a.ItemUid == 0 ? Random.Shared.Next(1, 255) : a.ItemUid,
+                    ItemUid = a.ItemUid == 0 ? Random.Shared.Next(1, ScyllaService.MaxRandomItemUid) : a.ItemUid,
                     StartingBid = a.StartingBid,
                     Tier = a.Tier,
                     Category = a.Category,
