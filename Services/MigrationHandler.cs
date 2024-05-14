@@ -38,7 +38,7 @@ public class MigrationHandler<T, TNew>
     public async Task Migrate(CancellationToken stoppingToken = default)
     {
         newTableFactory().CreateIfNotExists();
-        var tableName = newTableFactory().Name + "null";
+        var tableName = newTableFactory().Name + "2";
         var prefix = $"cassandra_migration_{tableName}_";
         migrated = Metrics.CreateCounter($"{prefix}migrated", "The number of items migrated");
         var db = redis.GetDatabase();
