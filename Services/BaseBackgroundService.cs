@@ -73,7 +73,7 @@ public class SellsCollector : BackgroundService
     {
         using var scrope = scopeFactory.CreateScope();
         var handler = new MigrationHandler<CassandraAuction, ScyllaAuction>(
-            () => scyllaService.GetAuctionsTable().Where(a=>a.Tag == null),
+            () => scyllaService.GetAuctionsTable().Where(a=>a.Tag == "unknown"),
             scyllaService.Session,
             scrope.ServiceProvider.GetRequiredService<ILogger<MigrationHandler<CassandraAuction, ScyllaAuction>>>(),
             scrope.ServiceProvider.GetRequiredService<IConnectionMultiplexer>(),
