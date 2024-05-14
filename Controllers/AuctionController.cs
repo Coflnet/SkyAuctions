@@ -80,6 +80,11 @@ public class AuctionController : ControllerBase
                 .FirstAsync();
         await scyllaService.InsertAuction(auction);
     }
+    [HttpGet("/api/auctions/timeKey")]
+    public int GetTimeKey(DateTime targetDate)
+    {
+        return ScyllaService.GetWeeksSinceStart(targetDate);
+    }
 
     [HttpGet]
     [Route("/api/player/{uuid}/auctions")]

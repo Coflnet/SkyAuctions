@@ -50,9 +50,11 @@ public class SellsCollector : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await scyllaService.Create();
-        await MigrateToMonthly();
+        await MigrateToWeekly();
         logger.LogInformation($"Finished completely");
         await Task.Delay(1000);
+        logger.LogInformation($"Migration test done check back manually");
+        return;
 
         while (!stoppingToken.IsCancellationRequested)
             await Kafka.KafkaConsumer.ConsumeBatch<SaveAuction>(
@@ -69,7 +71,7 @@ public class SellsCollector : BackgroundService
             );
     }
 
-    private async Task MigrateToMonthly()
+    private async Task MigrateToWeekly()
     {
         using var scrope = scopeFactory.CreateScope();
         var handler = new MigrationHandler<CassandraAuction, ScyllaAuction>(

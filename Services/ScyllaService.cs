@@ -185,7 +185,7 @@ public class ScyllaService
         var mapping = new MappingConfiguration()
             .Define(new Map<ScyllaAuction>()
             .PartitionKey(t => t.Tag, t => t.TimeKey)
-            .ClusteringKey(new Tuple<string, SortOrder>("issold", SortOrder.Ascending), new("end", SortOrder.Descending), new("itemuid", SortOrder.Descending))
+            .ClusteringKey(new Tuple<string, SortOrder>("issold", SortOrder.Ascending), new("end", SortOrder.Descending), new("auctionuid", SortOrder.Descending))
             // secondary index
             .Column(t => t.AuctionUid, cm => cm.WithSecondaryIndex())
             .Column(t => t.ItemUid, cm => cm.WithSecondaryIndex())
@@ -193,7 +193,7 @@ public class ScyllaService
             .Column(t => t.HighestBidder, cm => cm.WithSecondaryIndex())
             .Column(t => t.Bids, cm => cm.Ignore())
         );
-        return new Table<ScyllaAuction>(Session, mapping, "weekly_auctions");
+        return new Table<ScyllaAuction>(Session, mapping, "weekly_auctions_2");
     }
 
     private Table<QueryArchive> GetQueryArchiveTable()
