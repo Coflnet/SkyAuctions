@@ -14,7 +14,7 @@ namespace Coflnet.Sky.SkyAuctionTracker.Services;
 #nullable enable
 public class MigrationHandler<T, TNew>
 {
-    Func<Table<T>> oldTableFactory;
+    Func<CqlQuery<T>> oldTableFactory;
     Func<Table<TNew>> newTableFactory;
     Func<T, TNew> converter;
     ISession session;
@@ -23,7 +23,7 @@ public class MigrationHandler<T, TNew>
     Counter migrated;
     private int pageSize = 2000;
 
-    public MigrationHandler(Func<Table<T>> oldTableFactory, ISession session, ILogger<MigrationHandler<T, TNew>> logger, 
+    public MigrationHandler(Func<CqlQuery<T>> oldTableFactory, ISession session, ILogger<MigrationHandler<T, TNew>> logger, 
             IConnectionMultiplexer redis, Func<Table<TNew>> newTableFactory, Func<T, TNew> converter)
     {
         this.oldTableFactory = oldTableFactory;
@@ -38,7 +38,7 @@ public class MigrationHandler<T, TNew>
     public async Task Migrate(CancellationToken stoppingToken = default)
     {
         newTableFactory().CreateIfNotExists();
-        var tableName = newTableFactory().Name;
+        var tableName = newTableFactory().Name + "null";
         var prefix = $"cassandra_migration_{tableName}_";
         migrated = Metrics.CreateCounter($"{prefix}migrated", "The number of items migrated");
         var db = redis.GetDatabase();

@@ -17,6 +17,7 @@ using System.Collections.Generic;
 using Coflnet.Sky.SkyAuctionTracker.Services;
 using System.Runtime.CompilerServices;
 using StackExchange.Redis;
+using Cassandra.Data.Linq;
 
 namespace Coflnet.Sky.Auctions.Services;
 
@@ -72,7 +73,7 @@ public class SellsCollector : BackgroundService
     {
         using var scrope = scopeFactory.CreateScope();
         var handler = new MigrationHandler<CassandraAuction, ScyllaAuction>(
-            () => scyllaService.GetAuctionsTable(),
+            () => scyllaService.GetAuctionsTable().Where(a=>a.Tag == null),
             scyllaService.Session,
             scrope.ServiceProvider.GetRequiredService<ILogger<MigrationHandler<CassandraAuction, ScyllaAuction>>>(),
             scrope.ServiceProvider.GetRequiredService<IConnectionMultiplexer>(),
