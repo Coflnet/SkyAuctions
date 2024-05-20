@@ -53,8 +53,6 @@ public class SellsCollector : BackgroundService
         await MigrateToWeekly();
         logger.LogInformation($"Finished completely");
         await Task.Delay(1000);
-        logger.LogInformation($"Migration test done check back manually");
-        return;
 
         while (!stoppingToken.IsCancellationRequested)
             await Kafka.KafkaConsumer.ConsumeBatch<SaveAuction>(
