@@ -136,12 +136,12 @@ public class ScyllaService
             Enchantments = enchants,
             End = auction.End,
             HighestBidAmount = auction.HighestBidAmount,
-            HighestBidder = highestBidder,
+            HighestBidder = highestBidder == Guid.Empty ? GetRandomGuid() : highestBidder,
             ItemName = auction.ItemName,
             Tag = auction.Tag ?? "unknown",
             Tier = auction.Tier.ToString(),
             StartingBid = auction.StartingBid,
-            ItemUid = itemUid,
+            ItemUid = itemUid == 0 ? Random.Shared.Next(1, MaxRandomItemUid) : itemUid,
             ItemId = itemUuid,
             Start = auction.Start,
             ItemBytes = auction.NbtData?.data?.ToArray(),
@@ -156,7 +156,11 @@ public class ScyllaService
         };
         return converted;
     }
-
+    private static Guid GetRandomGuid()
+    {
+        // 00000000-0000-0000-0000-00000000xxxx generate random last 4 digits
+        return Guid.Parse("00000000-0000-0000-0000-00000000" + Random.Shared.Next(1, int.MaxValue).ToString("X4").PadLeft(4, '0').Truncate(4));
+    }
     public static short GetWeeksSinceStart(DateTime targetDate)
     {
         var startDate = new DateTime(2019, 1, 1, 0, 0, 0, DateTimeKind.Utc);
