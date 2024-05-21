@@ -22,9 +22,10 @@ public class MigrationHandler<T, TNew>
     private readonly IConnectionMultiplexer redis;
     Counter migrated;
     private int pageSize = 2000;
+    private string migrationName;
 
-    public MigrationHandler(Func<CqlQuery<T>> oldTableFactory, ISession session, ILogger<MigrationHandler<T, TNew>> logger, 
-            IConnectionMultiplexer redis, Func<Table<TNew>> newTableFactory, Func<T, TNew> converter)
+    public MigrationHandler(Func<CqlQuery<T>> oldTableFactory, ISession session, ILogger<MigrationHandler<T, TNew>> logger,
+            IConnectionMultiplexer redis, Func<Table<TNew>> newTableFactory, Func<T, TNew> converter, string migrationName)
     {
         this.oldTableFactory = oldTableFactory;
         this.session = session;
@@ -32,13 +33,14 @@ public class MigrationHandler<T, TNew>
         this.redis = redis;
         this.newTableFactory = newTableFactory;
         this.converter = converter;
+        this.migrationName = migrationName;
     }
 
     SemaphoreSlim queryThrottle = new SemaphoreSlim(11);
     public async Task Migrate(CancellationToken stoppingToken = default)
     {
         newTableFactory().CreateIfNotExists();
-        var tableName = newTableFactory().Name + "2";
+        var tableName = newTableFactory().Name + migrationName;
         var prefix = $"cassandra_migration_{tableName}_";
         migrated = Metrics.CreateCounter($"{prefix}migrated", "The number of items migrated");
         var db = redis.GetDatabase();

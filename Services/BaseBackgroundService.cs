@@ -71,11 +71,12 @@ public class SellsCollector : BackgroundService
 
     private async Task MigrateToWeekly()
     {
+        Console.WriteLine("Migrating to weekly" + GetRandomGuid());
         using var scrope = scopeFactory.CreateScope();
-        var handler = new MigrationHandler<CassandraAuction, ScyllaAuction>(
-            () => scyllaService.GetAuctionsTable(),
+        var handler = new MigrationHandler<ScyllaAuction, ScyllaAuction>(
+            () => scyllaService.AuctionsTable.Where(a => a.HighestBidder == Guid.Empty),
             scyllaService.Session,
-            scrope.ServiceProvider.GetRequiredService<ILogger<MigrationHandler<CassandraAuction, ScyllaAuction>>>(),
+            scrope.ServiceProvider.GetRequiredService<ILogger<MigrationHandler<ScyllaAuction, ScyllaAuction>>>(),
             scrope.ServiceProvider.GetRequiredService<IConnectionMultiplexer>(),
             () => scyllaService.AuctionsTable,
             a =>
@@ -88,7 +89,7 @@ public class SellsCollector : BackgroundService
                     Bids = a.Bids,
                     End = a.End,
                     HighestBidAmount = a.HighestBidAmount,
-                    HighestBidder = a.HighestBidder,
+                    HighestBidder = a.HighestBidder == Guid.Empty ? GetRandomGuid() : a.HighestBidder,
                     HighestBidderName = a.HighestBidderName,
                     ItemBytes = a.ItemBytes,
                     ItemCreatedAt = a.ItemCreatedAt,
@@ -115,11 +116,17 @@ public class SellsCollector : BackgroundService
                     Color = a.Color,
                     Count = a.Count,
                     Id = a.Id,
-                    AuctionUid = AuctionService.Instance.GetId(a.Uuid.ToString("N")),
-                    TimeKey = ScyllaService.GetWeeksSinceStart(a.End)
+                    AuctionUid = a.AuctionUid,
+                    TimeKey = a.TimeKey
                 };
-            });
+            }, "highestBidder");
         await handler.Migrate();
+    }
+
+    private static Guid GetRandomGuid()
+    {
+        // 00000000-0000-0000-0000-00000000xxxx generate random last 4 digits
+        return Guid.Parse("00000000-0000-0000-0000-00000000" + Random.Shared.Next(1, int.MaxValue).ToString("X4").PadLeft(4, '0').Truncate(4));
     }
 
     private async Task Migrate()
