@@ -147,24 +147,23 @@ public class SellsCollector : BackgroundService
         do
         {
             var page = await query.ExecutePagedAsync();
-            var updateStatements = page.ToList().Select(a => scyllaService.AuctionsTable
-                    .Where(ai => a.Tag == ai.Tag && a.TimeKey == ai.TimeKey && a.End == ai.End && a.AuctionUid == ai.AuctionUid && a.IsSold == ai.IsSold)
-                    .Select(ai => new ScyllaAuction() { ItemUid = Random.Shared.Next(1, ScyllaService.MaxRandomItemUid) }).Update()).ToList().Batch(10);
+            var updateStatements = page.ToList().Batch(1);
             await Parallel.ForEachAsync(updateStatements, new ParallelOptions() { MaxDegreeOfParallelism = 1 }, async (update, c) =>
             {
                 try
                 {
                     var batch = new BatchStatement();
-                    foreach (var item in update)
+                    foreach (var a in update)
                     {
-                        batch.Add(item);
-                        await item.ExecuteAsync();
+                        await scyllaService.AuctionsTable
+                            .Where(ai => a.Tag == ai.Tag && a.TimeKey == ai.TimeKey && a.End == ai.End && a.AuctionUid == ai.AuctionUid && a.IsSold == ai.IsSold)
+                            .Select(ai => new ScyllaAuction() { ItemUid = Random.Shared.Next(1, ScyllaService.MaxRandomItemUid) }).Update().ExecuteAsync();
                     }
                     logger.LogInformation($"Updated {update.Count()} 0 itemid items");
                 }
                 catch (Exception e)
                 {
-                    logger.LogError(e, "Insert failed");
+                    logger.LogError(e, "Insert failed {Json}", Newtonsoft.Json.JsonConvert.SerializeObject(update));
                     await Task.Delay(5000);
                 }
             });
