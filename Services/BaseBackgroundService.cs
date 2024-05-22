@@ -164,6 +164,7 @@ public class SellsCollector : BackgroundService
                 catch (Exception e)
                 {
                     logger.LogError(e, "Insert failed");
+                    await Task.Delay(5000);
                 }
             });
             pagingState = page.PagingState;
