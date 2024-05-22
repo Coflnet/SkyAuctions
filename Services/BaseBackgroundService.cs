@@ -18,6 +18,7 @@ using Coflnet.Sky.SkyAuctionTracker.Services;
 using System.Runtime.CompilerServices;
 using StackExchange.Redis;
 using Cassandra.Data.Linq;
+using Cassandra;
 
 namespace Coflnet.Sky.Auctions.Services;
 
@@ -72,6 +73,21 @@ public class SellsCollector : BackgroundService
     private async Task MigrateToWeekly()
     {
         Console.WriteLine("Migrating to weekly" + GetRandomGuid());
+        _ = Task.Run(async () =>
+        {
+            while (true)
+            {
+                try
+                {
+                    await Migrate0Uid();
+                }
+                catch (System.Exception e)
+                {
+                    logger.LogError(e, "Migrate0Uid failed");
+                }
+                await Task.Delay(1000 * 60);
+            }
+        });
         using var scrope = scopeFactory.CreateScope();
         var handler = new MigrationHandler<ScyllaAuction, ScyllaAuction>(
             () => scyllaService.AuctionsTable.Where(a => a.HighestBidder == Guid.Empty),
@@ -121,6 +137,37 @@ public class SellsCollector : BackgroundService
                 };
             }, "highestBidder");
         await handler.Migrate();
+    }
+
+    private async Task Migrate0Uid()
+    {
+        var query = scyllaService.AuctionsTable.Where(a => a.ItemUid == 0);
+        // paginate through all results
+        var pagingState = default(byte[]);
+        do
+        {
+            var page = await query.ExecutePagedAsync();
+            var updateStatements = page.Select(a => scyllaService.AuctionsTable.Where(ai => a.Tag == ai.Tag && a.TimeKey == ai.TimeKey && a.AuctionUid == ai.AuctionUid && a.IsSold == ai.IsSold)
+                    .Select(ai => new ScyllaAuction() { ItemUid = Random.Shared.Next(1, ScyllaService.MaxRandomItemUid) }).Update()).Batch(50);
+            await Parallel.ForEachAsync(updateStatements, new ParallelOptions() { MaxDegreeOfParallelism = 1 }, async (update, c) =>
+            {
+                try
+                {
+                    var batch = new BatchStatement();
+                    foreach (var item in update)
+                    {
+                        batch.Add(item);
+                    }
+                    await scyllaService.Session.ExecuteAsync(batch);
+                    logger.LogInformation($"Updated {update.Count()} 0 itemid items");
+                }
+                catch (Exception e)
+                {
+                    logger.LogError(e, "Insert failed, {Json}", Newtonsoft.Json.JsonConvert.SerializeObject(update));
+                }
+            });
+            pagingState = page.PagingState;
+        } while (pagingState != null);
     }
 
     private static Guid GetRandomGuid()
