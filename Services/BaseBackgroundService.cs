@@ -155,9 +155,15 @@ public class SellsCollector : BackgroundService
                     var batch = new BatchStatement();
                     foreach (var a in update)
                     {
+                        var tag = a.Tag;
+                        var timeKey = a.TimeKey;
+                        var end = a.End;
+                        var auctionUid = a.AuctionUid;
+                        var isSold = a.IsSold;
+                        var randomId = Random.Shared.Next(1, ScyllaService.MaxRandomItemUid);
                         await scyllaService.AuctionsTable
-                            .Where(ai => a.Tag == ai.Tag && a.TimeKey == ai.TimeKey && a.End == ai.End && a.AuctionUid == ai.AuctionUid && a.IsSold == ai.IsSold)
-                            .Select(ai => new ScyllaAuction() { ItemUid = Random.Shared.Next(1, ScyllaService.MaxRandomItemUid) }).Update().ExecuteAsync();
+                            .Where(a => a.Tag == tag && a.TimeKey == timeKey && a.End == end && a.AuctionUid == auctionUid && a.IsSold == isSold)
+                            .Select(ai => new ScyllaAuction() { ItemUid = randomId }).Update().ExecuteAsync();
                     }
                     logger.LogInformation($"Updated {update.Count()} 0 itemid items");
                 }
