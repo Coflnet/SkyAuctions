@@ -147,8 +147,9 @@ public class SellsCollector : BackgroundService
         do
         {
             var page = await query.ExecutePagedAsync();
-            var updateStatements = page.ToList().Select(a => scyllaService.AuctionsTable.Where(ai => a.Tag == ai.Tag && a.TimeKey == ai.TimeKey && a.AuctionUid == ai.AuctionUid && a.IsSold == ai.IsSold)
-                    .Select(ai => new ScyllaAuction() { ItemUid = Random.Shared.Next(1, ScyllaService.MaxRandomItemUid) }).Update()).ToList().Batch(1);
+            var updateStatements = page.ToList().Select(a => scyllaService.AuctionsTable
+                    .Where(ai => a.Tag == ai.Tag && a.TimeKey == ai.TimeKey && a.End == ai.End && a.AuctionUid == ai.AuctionUid && a.IsSold == ai.IsSold)
+                    .Select(ai => new ScyllaAuction() { ItemUid = Random.Shared.Next(1, ScyllaService.MaxRandomItemUid) }).Update()).ToList().Batch(10);
             await Parallel.ForEachAsync(updateStatements, new ParallelOptions() { MaxDegreeOfParallelism = 1 }, async (update, c) =>
             {
                 try
