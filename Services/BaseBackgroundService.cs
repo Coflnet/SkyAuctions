@@ -157,8 +157,8 @@ public class SellsCollector : BackgroundService
                     foreach (var item in update)
                     {
                         batch.Add(item);
+                        await item.ExecuteAsync();
                     }
-                    await scyllaService.Session.ExecuteAsync(batch);
                     logger.LogInformation($"Updated {update.Count()} 0 itemid items");
                 }
                 catch (Exception e)
