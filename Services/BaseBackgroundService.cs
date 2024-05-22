@@ -73,21 +73,6 @@ public class SellsCollector : BackgroundService
     private async Task MigrateToWeekly()
     {
         Console.WriteLine("Migrating to weekly" + GetRandomGuid());
-        _ = Task.Run(async () =>
-        {
-            while (true)
-            {
-                try
-                {
-                    await Migrate0Uid();
-                }
-                catch (System.Exception e)
-                {
-                    logger.LogError(e, "Migrate0Uid failed");
-                }
-                await Task.Delay(1000 * 60);
-            }
-        });
         using var scrope = scopeFactory.CreateScope();
         var handler = new MigrationHandler<ScyllaAuction, ScyllaAuction>(
             () => scyllaService.AuctionsTable.Where(a => a.HighestBidder == Guid.Empty),
@@ -97,46 +82,63 @@ public class SellsCollector : BackgroundService
             () => scyllaService.AuctionsTable,
             a =>
             {
-                if (a.Id % 1000 == 1)
-                    logger.LogInformation($"Migrating {a.Uuid} {a.Tag} {a.End}");
-                return new ScyllaAuction()
-                {
-                    Auctioneer = a.Auctioneer,
-                    Bids = a.Bids,
-                    End = a.End,
-                    HighestBidAmount = a.HighestBidAmount,
-                    HighestBidder = a.HighestBidder == Guid.Empty ? GetRandomGuid() : a.HighestBidder,
-                    HighestBidderName = a.HighestBidderName,
-                    ItemBytes = a.ItemBytes,
-                    ItemCreatedAt = a.ItemCreatedAt,
-                    ItemId = a.ItemId,
-                    NbtLookup = a.NbtLookup,
-                    ProfileId = a.ProfileId,
-                    ProfileName = a.ProfileName,
-                    Start = a.Start,
-                    Tag = a.Tag,
-                    Uuid = a.Uuid,
-                    Coop = a.Coop,
-                    CoopName = a.CoopName,
-                    ExtraAttributesJson = a.ExtraAttributesJson,
-                    Extra = a.Extra,
-                    ItemLore = a.ItemLore,
-                    ItemName = a.ItemName,
-                    ItemUid = a.ItemUid == 0 ? Random.Shared.Next(1, ScyllaService.MaxRandomItemUid) : a.ItemUid,
-                    StartingBid = a.StartingBid,
-                    Tier = a.Tier,
-                    Category = a.Category,
-                    IsSold = a.IsSold,
-                    Bin = a.Bin,
-                    Enchantments = a.Enchantments,
-                    Color = a.Color,
-                    Count = a.Count,
-                    Id = a.Id,
-                    AuctionUid = a.AuctionUid,
-                    TimeKey = a.TimeKey
-                };
+                return Convert0ids(a);
             }, "highestBidder");
         await handler.Migrate();
+
+        var handler2 = new MigrationHandler<ScyllaAuction, ScyllaAuction>(
+            () => scyllaService.AuctionsTable.Where(a => a.ItemUid == 0),
+            scyllaService.Session,
+            scrope.ServiceProvider.GetRequiredService<ILogger<MigrationHandler<ScyllaAuction, ScyllaAuction>>>(),
+            scrope.ServiceProvider.GetRequiredService<IConnectionMultiplexer>(),
+            () => scyllaService.AuctionsTable,
+            a =>
+            {
+                return Convert0ids(a);
+            }, "itemuid0");
+        await handler2.Migrate();
+    }
+
+    private ScyllaAuction Convert0ids(ScyllaAuction a)
+    {
+        if (a.Id % 1000 == 1)
+            logger.LogInformation($"Migrating {a.Uuid} {a.Tag} {a.End}");
+        return new ScyllaAuction()
+        {
+            Auctioneer = a.Auctioneer,
+            Bids = a.Bids,
+            End = a.End,
+            HighestBidAmount = a.HighestBidAmount,
+            HighestBidder = a.HighestBidder == Guid.Empty ? GetRandomGuid() : a.HighestBidder,
+            HighestBidderName = a.HighestBidderName,
+            ItemBytes = a.ItemBytes,
+            ItemCreatedAt = a.ItemCreatedAt,
+            ItemId = a.ItemId,
+            NbtLookup = a.NbtLookup,
+            ProfileId = a.ProfileId,
+            ProfileName = a.ProfileName,
+            Start = a.Start,
+            Tag = a.Tag,
+            Uuid = a.Uuid,
+            Coop = a.Coop,
+            CoopName = a.CoopName,
+            ExtraAttributesJson = a.ExtraAttributesJson,
+            Extra = a.Extra,
+            ItemLore = a.ItemLore,
+            ItemName = a.ItemName,
+            ItemUid = a.ItemUid == 0 ? Random.Shared.Next(1, ScyllaService.MaxRandomItemUid) : a.ItemUid,
+            StartingBid = a.StartingBid,
+            Tier = a.Tier,
+            Category = a.Category,
+            IsSold = a.IsSold,
+            Bin = a.Bin,
+            Enchantments = a.Enchantments,
+            Color = a.Color,
+            Count = a.Count,
+            Id = a.Id,
+            AuctionUid = a.AuctionUid,
+            TimeKey = a.TimeKey
+        };
     }
 
     private async Task Migrate0Uid()
