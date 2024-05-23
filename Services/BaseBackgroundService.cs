@@ -83,7 +83,7 @@ public class SellsCollector : BackgroundService
             a =>
             {
                 return Convert0ids(a);
-            }, "highestBidder");
+            }, "highestBidder0");
         await handler.Migrate();
 
         var handler2 = new MigrationHandler<ScyllaAuction, ScyllaAuction>(
