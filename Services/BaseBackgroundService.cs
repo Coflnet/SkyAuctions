@@ -75,7 +75,7 @@ public class SellsCollector : BackgroundService
         Console.WriteLine("Migrating to weekly" + GetRandomGuid());
         using var scrope = scopeFactory.CreateScope();
         // from 0 - 200
-        await Parallel.ForEachAsync(Enumerable.Range(0, 200).ToList(), new ParallelOptions() { MaxDegreeOfParallelism = 3 }, async (i, c) =>
+        await Parallel.ForEachAsync(Enumerable.Range(0, 200).ToList(), new ParallelOptions() { MaxDegreeOfParallelism = 1 }, async (i, c) =>
         {
             var handler = new MigrationHandler<ScyllaAuction, ScyllaAuction>(
                 () => scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == i),
@@ -86,7 +86,7 @@ public class SellsCollector : BackgroundService
                 a =>
                 {
                     return Convert0ids(a);
-                }, "ENCHANTED_BOOK" + i);
+                }, "ENCHANTED_BOOK-" + i);
             await handler.Migrate();
             await Task.Delay(10000);
             //await scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == i).Delete().ExecuteAsync();
