@@ -81,16 +81,16 @@ public class AuctionController : ControllerBase
         await scyllaService.InsertAuction(auction);
     }
     [HttpGet("/api/auctions/timeKey")]
-    public int GetTimeKey(DateTime targetDate)
+    public int GetTimeKey(DateTime targetDate, string tag = "any")
     {
-        return ScyllaService.GetWeeksSinceStart(targetDate);
+        return ScyllaService.GetWeekOrDaysSinceStart(tag, targetDate);
     }
 
     [HttpGet]
     [Route("/api/player/{uuid}/auctions")]
     public async Task<IEnumerable<SaveAuction>> GetPlayerAuctions(string uuid, DateTime end, int amount = 10)
     {
-        if(end == default)
+        if (end == default)
             end = DateTime.UtcNow;
         return await scyllaService.GetRecentFromPlayer(Guid.Parse(uuid), end, amount);
     }

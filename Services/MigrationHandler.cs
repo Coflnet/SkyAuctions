@@ -23,9 +23,10 @@ public class MigrationHandler<T, TNew>
     Counter migrated;
     private int pageSize = 2000;
     private string migrationName;
+    private Func<T,CqlQuery<T>> oldDelete = null;
 
     public MigrationHandler(Func<CqlQuery<T>> oldTableFactory, ISession session, ILogger<MigrationHandler<T, TNew>> logger,
-            IConnectionMultiplexer redis, Func<Table<TNew>> newTableFactory, Func<T, TNew> converter, string migrationName)
+            IConnectionMultiplexer redis, Func<Table<TNew>> newTableFactory, Func<T, TNew> converter, string migrationName, Func<T,CqlQuery<T>> deleteOld = null)
     {
         this.oldTableFactory = oldTableFactory;
         this.session = session;
@@ -34,6 +35,7 @@ public class MigrationHandler<T, TNew>
         this.newTableFactory = newTableFactory;
         this.converter = converter;
         this.migrationName = migrationName;
+        this.oldDelete = deleteOld;
     }
 
     SemaphoreSlim queryThrottle = new SemaphoreSlim(11);
@@ -159,6 +161,16 @@ public class MigrationHandler<T, TNew>
         }
         batchStatement.SetConsistencyLevel(ConsistencyLevel.Quorum);
         await session.ExecuteAsync(batchStatement);
+        if(oldDelete == null)
+            return;
+        var oldTable = oldTableFactory();
+        var deleteBatch = new BatchStatement();
+        foreach (var score in batchToInsert)
+        {
+            deleteBatch.Add(oldDelete(score));
+        }
+        deleteBatch.SetConsistencyLevel(ConsistencyLevel.Quorum);
+        await session.ExecuteAsync(deleteBatch);
     }
 
     private async Task<IPage<T>> GetOldTable(byte[]? pagingState = null)

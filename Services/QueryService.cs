@@ -103,7 +103,7 @@ public class QueryService
     {
         var table = scyllaService.AuctionsTable;
         var start = end.AddDays(-1);
-        var monthId = ScyllaService.GetWeeksSinceStart(end);
+        var monthId = ScyllaService.GetWeekOrDaysSinceStart(tag, end);
         var baseData = await table.Where(a => a.End > start && a.End <= end && a.IsSold == true && a.Tag == tag && a.TimeKey == monthId).ExecuteAsync();
         var result = AddFilter(query, baseData).ToList();
         var prices = result.Select(a => a.HighestBidAmount).ToList();

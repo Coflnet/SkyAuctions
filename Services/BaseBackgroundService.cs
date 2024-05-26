@@ -74,35 +74,42 @@ public class SellsCollector : BackgroundService
     {
         Console.WriteLine("Migrating to weekly" + GetRandomGuid());
         using var scrope = scopeFactory.CreateScope();
-        var handler = new MigrationHandler<ScyllaAuction, ScyllaAuction>(
-            () => scyllaService.AuctionsTable.Where(a => a.HighestBidder == Guid.Empty),
-            scyllaService.Session,
-            scrope.ServiceProvider.GetRequiredService<ILogger<MigrationHandler<ScyllaAuction, ScyllaAuction>>>(),
-            scrope.ServiceProvider.GetRequiredService<IConnectionMultiplexer>(),
-            () => scyllaService.AuctionsTable,
-            a =>
-            {
-                return Convert0ids(a);
-            }, "highestBidder0");
-        await handler.Migrate();
+        // from 0 - 200
+        await Parallel.ForEachAsync(Enumerable.Range(0, 200).ToList(), new ParallelOptions() { MaxDegreeOfParallelism = 3 }, async (i, c) =>
+        {
+            var handler = new MigrationHandler<ScyllaAuction, ScyllaAuction>(
+                () => scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == i),
+                scyllaService.Session,
+                scrope.ServiceProvider.GetRequiredService<ILogger<MigrationHandler<ScyllaAuction, ScyllaAuction>>>(),
+                scrope.ServiceProvider.GetRequiredService<IConnectionMultiplexer>(),
+                () => scyllaService.AuctionsTable,
+                a =>
+                {
+                    return Convert0ids(a);
+                }, "ENCHANTED_BOOK" + i);
+            await handler.Migrate();
+            await Task.Delay(10000);
+            //await scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == i).Delete().ExecuteAsync();
 
-        var handler2 = new MigrationHandler<ScyllaAuction, ScyllaAuction>(
-            () => scyllaService.AuctionsTable.Where(a => a.ItemUid == 0),
-            scyllaService.Session,
-            scrope.ServiceProvider.GetRequiredService<ILogger<MigrationHandler<ScyllaAuction, ScyllaAuction>>>(),
-            scrope.ServiceProvider.GetRequiredService<IConnectionMultiplexer>(),
-            () => scyllaService.AuctionsTable,
-            a =>
-            {
-                return Convert0ids(a);
-            }, "itemuid0");
-        await handler2.Migrate();
+            var handler2 = new MigrationHandler<ScyllaAuction, ScyllaAuction>(
+                () => scyllaService.AuctionsTable.Where(a => a.Tag == "unknown" && a.TimeKey == i),
+                scyllaService.Session,
+                scrope.ServiceProvider.GetRequiredService<ILogger<MigrationHandler<ScyllaAuction, ScyllaAuction>>>(),
+                scrope.ServiceProvider.GetRequiredService<IConnectionMultiplexer>(),
+                () => scyllaService.AuctionsTable,
+                a =>
+                {
+                    return Convert0ids(a);
+                }, "unknown" + i);
+            await handler2.Migrate();
+        });
     }
 
     private ScyllaAuction Convert0ids(ScyllaAuction a)
     {
         if (a.Id % 1000 == 1)
             logger.LogInformation($"Migrating {a.Uuid} {a.Tag} {a.End}");
+        var timeKey = ScyllaService.GetWeekOrDaysSinceStart(a.Tag, a.End);
         return new ScyllaAuction()
         {
             Auctioneer = a.Auctioneer,
@@ -137,47 +144,10 @@ public class SellsCollector : BackgroundService
             Count = a.Count,
             Id = a.Id,
             AuctionUid = a.AuctionUid,
-            TimeKey = a.TimeKey
+            TimeKey = timeKey
         };
     }
 
-    private async Task Migrate0Uid()
-    {
-        var query = scyllaService.AuctionsTable.Where(a => a.ItemUid == 0);
-        // paginate through all results
-        var pagingState = default(byte[]);
-        do
-        {
-            var page = await query.ExecutePagedAsync();
-            var updateStatements = page.ToList().Batch(1);
-            await Parallel.ForEachAsync(updateStatements, new ParallelOptions() { MaxDegreeOfParallelism = 1 }, async (update, c) =>
-            {
-                try
-                {
-                    var batch = new BatchStatement();
-                    foreach (var a in update)
-                    {
-                        var tag = a.Tag;
-                        var timeKey = a.TimeKey;
-                        var end = a.End;
-                        var auctionUid = a.AuctionUid;
-                        var isSold = a.IsSold;
-                        var randomId = Random.Shared.Next(1, ScyllaService.MaxRandomItemUid);
-                        await scyllaService.AuctionsTable
-                            .Where(a => a.Tag == tag && a.TimeKey == timeKey && a.End == end && a.AuctionUid == auctionUid && a.IsSold == isSold)
-                            .Select(ai => new ScyllaAuction() { ItemUid = randomId }).Update().ExecuteAsync();
-                    }
-                    logger.LogInformation($"Updated {update.Count()} 0 itemid items");
-                }
-                catch (Exception e)
-                {
-                    logger.LogError(e, "Insert failed {Json}", Newtonsoft.Json.JsonConvert.SerializeObject(update));
-                    await Task.Delay(5000);
-                }
-            });
-            pagingState = page.PagingState;
-        } while (pagingState != null);
-    }
 
     private static Guid GetRandomGuid()
     {

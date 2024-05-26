@@ -124,7 +124,7 @@ public class ScyllaService
         var itemUid = long.Parse(auction.FlatenedNBT.GetValueOrDefault("uid", Random.Shared.Next(1, MaxRandomItemUid).ToString("x")), System.Globalization.NumberStyles.HexNumber);
         var isSold = auction.HighestBidAmount > 0 && auction.End < DateTime.UtcNow;
         var sellerUuid = Guid.Parse(auction.AuctioneerId ?? Guid.Empty.ToString());
-        short monthsSine = GetWeeksSinceStart(auction.End);
+        short timeKey = GetWeekOrDaysSinceStart(auction.Tag, auction.End);
         var converted = new ScyllaAuction()
         {
             Uuid = auctionUuid,
@@ -151,7 +151,7 @@ public class ScyllaService
             NbtLookup = auction.FlatenedNBT,
             Count = auction.Count,
             Bids = bids,
-            TimeKey = monthsSine,
+            TimeKey = timeKey,
             AuctionUid = auction.UId,
         };
         return converted;
@@ -161,10 +161,15 @@ public class ScyllaService
         // 00000000-0000-0000-0000-00000000xxxx generate random last 4 digits
         return Guid.Parse("00000000-0000-0000-0000-00000000" + Random.Shared.Next(1, int.MaxValue).ToString("X4").PadLeft(4, '0').Truncate(4));
     }
-    public static short GetWeeksSinceStart(DateTime targetDate)
+    public static short GetWeekOrDaysSinceStart(string tag, DateTime targetDate)
     {
         var startDate = new DateTime(2019, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-        return (short)((targetDate.Ticks - startDate.Ticks) / TimeSpan.FromDays(7).Ticks);
+        var splitSize = 7d;
+        if (tag == "ENCHANTED_BOOK" || tag == "unknown" || tag == null)
+        {
+            splitSize = 0.5;
+        }
+        return (short)((targetDate.Ticks - startDate.Ticks) / TimeSpan.FromDays(splitSize).Ticks);
     }
 
     public Table<CassandraAuction> GetAuctionsTable()
@@ -408,7 +413,7 @@ public class ScyllaService
         var minEnd = lookup.Select(a => a.Min(a => a.End)).Min();
         var maxEnd = lookup.Select(a => a.Max(a => a.End)).Max() + TimeSpan.FromDays(14);
         var tag = lookup.First().First().Tag;
-        var currentWeek = GetWeeksSinceStart(auctions.Max(a => a.End));
+        var currentWeek = GetWeekOrDaysSinceStart(tag, auctions.Max(a => a.End));
         var fourWeeksBefore = Enumerable.Range(currentWeek - 1, 4).Select(i => (short)i).ToList();
         var result = (await AuctionsTable.Where(a => ids.Contains(a.Uuid) && fourWeeksBefore.Contains(a.TimeKey) && !a.IsSold && a.End < maxEnd && a.End > minEnd && a.Tag == tag).AllowFiltering().ExecuteAsync()).ToList();
         Logger.LogInformation($"Found {result.Count()} auctions to retrofit from {auctions.Count()} auctions");
@@ -462,7 +467,7 @@ public class ScyllaService
             // max 2 days, positive
             days = Math.Min(2, Math.Max(0, days));
         }
-        var currentMonth = GetWeeksSinceStart(DateTime.UtcNow);
+        var currentMonth = GetWeekOrDaysSinceStart(itemTag, DateTime.UtcNow);
         var previousMonth = currentMonth - 1;
         var batch = await AuctionsTable.Where(a => a.Tag == itemTag && (a.TimeKey == currentMonth || a.TimeKey == previousMonth)
                     && a.End > DateTime.UtcNow - TimeSpan.FromDays(days) && a.End < DateTime.UtcNow && a.IsSold).ExecuteAsync();
@@ -484,7 +489,7 @@ public class ScyllaService
     }
     public async Task<List<SaveAuction>> GetRecentBatch(string itemTag)
     {
-        var currentMonth = GetWeeksSinceStart(DateTime.UtcNow);
+        var currentMonth = GetWeekOrDaysSinceStart(itemTag, DateTime.UtcNow);
         var batch = await AuctionsTable.Where(a => a.Tag == itemTag && a.TimeKey == currentMonth && a.End > DateTime.UtcNow - TimeSpan.FromDays(2) && a.IsSold)
                     .OrderByDescending(a => a.End).Take(1000).ExecuteAsync();
         return batch.Select(CassandraToOld).ToList();
