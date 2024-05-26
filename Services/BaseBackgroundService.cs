@@ -86,7 +86,7 @@ public class SellsCollector : BackgroundService
                 a =>
                 {
                     return Convert0ids(a);
-                }, "ENCHANTED_BOOK-" + i);
+                }, "ENCHANTED_BOOK_" + i);
             await handler.Migrate();
             await Task.Delay(10000);
             //await scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == i).Delete().ExecuteAsync();
