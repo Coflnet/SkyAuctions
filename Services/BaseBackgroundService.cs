@@ -88,8 +88,14 @@ public class SellsCollector : BackgroundService
                     return Convert0ids(a);
                 }, "ENCHANTED_BOOK_" + i);
             await handler.Migrate();
-            await scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == i).Delete().ExecuteAsync();
-
+            try
+            {
+                await scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == i).Delete().ExecuteAsync();
+            }
+            catch (Cassandra.WriteTimeoutException e)
+            {
+                logger.LogError(e, $"Timeout Error while deleting {i}");
+            }
             var handler2 = new MigrationHandler<ScyllaAuction, ScyllaAuction>(
                 () => scyllaService.AuctionsTable.Where(a => a.Tag == "unknown" && a.TimeKey == i),
                 scyllaService.Session,
