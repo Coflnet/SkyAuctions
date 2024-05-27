@@ -75,7 +75,7 @@ public class SellsCollector : BackgroundService
         Console.WriteLine("Migrating to weekly" + GetRandomGuid());
         using var scrope = scopeFactory.CreateScope();
         // from 0 - 200
-        await Parallel.ForEachAsync(Enumerable.Range(40, 200).ToList(), new ParallelOptions() { MaxDegreeOfParallelism = 1 }, async (i, c) =>
+        await Parallel.ForEachAsync(Enumerable.Range(43, 200).ToList(), new ParallelOptions() { MaxDegreeOfParallelism = 1 }, async (i, c) =>
         {
             var handler = new MigrationHandler<ScyllaAuction, ScyllaAuction>(
                 () => scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == i),
@@ -110,20 +110,37 @@ public class SellsCollector : BackgroundService
         {
             for (int h = 0; h < 24; h++)
             {
+                var maxEnd = new DateTime(2019, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddDays(i * 7 + d).AddHours(h);
+                var start = maxEnd.AddHours(-1);
 
                 try
                 {
-                    var maxEnd = new DateTime(2019, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddDays(i * 7 + d).AddHours(h);
-                    await scyllaService.AuctionsTable.Where(a => a.Tag == tag && a.TimeKey == i && a.IsSold && a.End < maxEnd).Delete().ExecuteAsync();
-                    await scyllaService.AuctionsTable.Where(a => a.Tag == tag && a.TimeKey == i && !a.IsSold && a.End < maxEnd).Delete().ExecuteAsync();
-                    logger.LogInformation($"Deleted {i} {tag} {maxEnd}");
+                    await NewMethod(i, tag, maxEnd);
                 }
                 catch (Cassandra.WriteTimeoutException e)
                 {
-                    logger.LogError(e, $"Timeout Error while deleting {i}");
-                    await Task.Delay(10000);
+                    logger.LogError(e, $"Timeout Error while deleting {i} {tag} {maxEnd}");
+                    for (int m = 0; m < 60; m++)
+                    {
+                        try
+                        {
+                            await NewMethod(i, tag, maxEnd);
+                        }
+                        catch (Cassandra.WriteTimeoutException ei)
+                        {
+                            logger.LogError(ei, $"Timeout Error while deleting minutes {i} {tag} {maxEnd}");
+                            await Task.Delay(1000);
+                        }
+                    }
                 }
             }
+        }
+
+        async Task NewMethod(int i, string tag, DateTime maxEnd)
+        {
+            await scyllaService.AuctionsTable.Where(a => a.Tag == tag && a.TimeKey == i && a.IsSold && a.End < maxEnd).Delete().ExecuteAsync();
+            await scyllaService.AuctionsTable.Where(a => a.Tag == tag && a.TimeKey == i && !a.IsSold && a.End < maxEnd).Delete().ExecuteAsync();
+            logger.LogInformation($"Deleted {i} {tag} {maxEnd}");
         }
     }
 
