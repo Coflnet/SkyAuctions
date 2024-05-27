@@ -115,21 +115,21 @@ public class SellsCollector : BackgroundService
 
                 try
                 {
-                    await NewMethod(i, tag, maxEnd);
+                    await NewMethod(i, tag, maxEnd, start);
                 }
                 catch (Cassandra.WriteTimeoutException e)
                 {
                     logger.LogError(e, $"Timeout Error while deleting {i} {tag} {maxEnd}");
                     for (int m = 0; m < 60; m++)
                     {
+                        var adjustedEnd = maxEnd.AddMinutes(m - 60);
                         try
                         {
-                            var adjustedEnd = maxEnd.AddMinutes(m-60);
-                            await NewMethod(i, tag, adjustedEnd);
+                            await NewMethod(i, tag, adjustedEnd, start);
                         }
                         catch (Cassandra.WriteTimeoutException ei)
                         {
-                            logger.LogError(ei, $"Timeout Error while deleting minutes {i} {tag} {maxEnd}");
+                            logger.LogError(ei, $"Timeout Error while deleting minutes {i} {tag} {adjustedEnd}");
                             await Task.Delay(1000);
                         }
                     }
@@ -137,10 +137,10 @@ public class SellsCollector : BackgroundService
             }
         }
 
-        async Task NewMethod(int i, string tag, DateTime maxEnd)
+        async Task NewMethod(int i, string tag, DateTime maxEnd, DateTime start)
         {
-            await scyllaService.AuctionsTable.Where(a => a.Tag == tag && a.TimeKey == i && a.IsSold && a.End < maxEnd).Delete().ExecuteAsync();
-            await scyllaService.AuctionsTable.Where(a => a.Tag == tag && a.TimeKey == i && !a.IsSold && a.End < maxEnd).Delete().ExecuteAsync();
+            await scyllaService.AuctionsTable.Where(a => a.Tag == tag && a.TimeKey == i && a.IsSold && a.End < maxEnd && a.End >= start).Delete().ExecuteAsync();
+            await scyllaService.AuctionsTable.Where(a => a.Tag == tag && a.TimeKey == i && !a.IsSold && a.End < maxEnd && a.End >= start).Delete().ExecuteAsync();
             logger.LogInformation($"Deleted {i} {tag} {maxEnd}");
         }
     }
