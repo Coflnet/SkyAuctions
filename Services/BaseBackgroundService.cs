@@ -88,7 +88,7 @@ public class SellsCollector : BackgroundService
                     return Convert0ids(a);
                 }, "ENCHANTED_BOOK_" + i);
             await handler.Migrate();
-            //await scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == i).Delete().ExecuteAsync();
+            await scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == i).Delete().ExecuteAsync();
 
             var handler2 = new MigrationHandler<ScyllaAuction, ScyllaAuction>(
                 () => scyllaService.AuctionsTable.Where(a => a.Tag == "unknown" && a.TimeKey == i),
@@ -101,6 +101,7 @@ public class SellsCollector : BackgroundService
                     return Convert0ids(a);
                 }, "unknown" + i);
             await handler2.Migrate();
+            await scyllaService.AuctionsTable.Where(a => a.Tag == "unknown" && a.TimeKey == i).Delete().ExecuteAsync();
         });
     }
 
