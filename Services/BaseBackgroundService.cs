@@ -101,7 +101,14 @@ public class SellsCollector : BackgroundService
                     return Convert0ids(a);
                 }, "unknown" + i);
             await handler2.Migrate();
-            await scyllaService.AuctionsTable.Where(a => a.Tag == "unknown" && a.TimeKey == i).Delete().ExecuteAsync();
+            try
+            {
+                await scyllaService.AuctionsTable.Where(a => a.Tag == "unknown" && a.TimeKey == i).Delete().ExecuteAsync();
+            }
+            catch (Cassandra.WriteTimeoutException e)
+            {
+                logger.LogError(e, $"Timeout Error while deleting {i}");
+            }
         });
     }
 
