@@ -124,7 +124,8 @@ public class SellsCollector : BackgroundService
                     {
                         try
                         {
-                            await NewMethod(i, tag, maxEnd);
+                            var adjustedEnd = maxEnd.AddMinutes(m-60);
+                            await NewMethod(i, tag, adjustedEnd);
                         }
                         catch (Cassandra.WriteTimeoutException ei)
                         {
