@@ -88,14 +88,7 @@ public class SellsCollector : BackgroundService
                     return Convert0ids(a);
                 }, "ENCHANTED_BOOK_" + i);
             await handler.Migrate();
-            try
-            {
-                await scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == i).Delete().ExecuteAsync();
-            }
-            catch (Cassandra.WriteTimeoutException e)
-            {
-                logger.LogError(e, $"Timeout Error while deleting {i}");
-            }
+            await DeleteHourly(i, "ENCHANTED_BOOK");
             var handler2 = new MigrationHandler<ScyllaAuction, ScyllaAuction>(
                 () => scyllaService.AuctionsTable.Where(a => a.Tag == "unknown" && a.TimeKey == i),
                 scyllaService.Session,
@@ -107,15 +100,31 @@ public class SellsCollector : BackgroundService
                     return Convert0ids(a);
                 }, "unknown" + i);
             await handler2.Migrate();
-            try
-            {
-                await scyllaService.AuctionsTable.Where(a => a.Tag == "unknown" && a.TimeKey == i).Delete().ExecuteAsync();
-            }
-            catch (Cassandra.WriteTimeoutException e)
-            {
-                logger.LogError(e, $"Timeout Error while deleting {i}");
-            }
+            await DeleteHourly(i, "unknown");
         });
+    }
+
+    private async Task DeleteHourly(int i, string tag)
+    {
+        for (int d = 0; d < 7; d++)
+        {
+            for (int h = 0; h < 24; h++)
+            {
+
+                try
+                {
+                    var maxEnd = new DateTime(2019, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddDays(i * 7 + d).AddHours(h);
+                    await scyllaService.AuctionsTable.Where(a => a.Tag == tag && a.TimeKey == i && a.IsSold && a.End < maxEnd).Delete().ExecuteAsync();
+                    await scyllaService.AuctionsTable.Where(a => a.Tag == tag && a.TimeKey == i && !a.IsSold && a.End < maxEnd).Delete().ExecuteAsync();
+                    logger.LogInformation($"Deleted {i} {tag} {maxEnd}");
+                }
+                catch (Cassandra.WriteTimeoutException e)
+                {
+                    logger.LogError(e, $"Timeout Error while deleting {i}");
+                    await Task.Delay(10000);
+                }
+            }
+        }
     }
 
     private ScyllaAuction Convert0ids(ScyllaAuction a)
