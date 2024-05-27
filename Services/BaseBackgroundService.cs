@@ -125,12 +125,11 @@ public class SellsCollector : BackgroundService
                         var adjustedEnd = maxEnd.AddMinutes(m - 60);
                         try
                         {
-                            await NewMethod(i, tag, adjustedEnd, start);
+                            await NewMethod(i, tag, adjustedEnd, adjustedEnd - TimeSpan.FromMinutes(5));
                         }
                         catch (Cassandra.WriteTimeoutException ei)
                         {
                             logger.LogError(ei, $"Timeout Error while deleting minutes {i} {tag} {adjustedEnd}");
-                            await Task.Delay(1000);
                         }
                     }
                 }
