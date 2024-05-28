@@ -119,9 +119,9 @@ public class SellsCollector : BackgroundService
     {
         for (int d = 0; d < 7; d++)
         {
-            for (int h = 0; h < 24; h++)
+            for (int h = 22; h < 24; h++)
             {
-                var maxEnd = new DateTime(2019, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddDays(i * 7 + d).AddHours(h);
+                var maxEnd = new DateTime(2019, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddDays(i * 7 + d).AddHours(h + 2);
                 var start = maxEnd.AddHours(-10);
 
                 try
