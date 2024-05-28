@@ -74,19 +74,26 @@ public class SellsCollector : BackgroundService
     {
         Console.WriteLine("Migrating to weekly" + GetRandomGuid());
         using var scrope = scopeFactory.CreateScope();
-        var handler = new MigrationHandler<ScyllaAuction, ScyllaAuction>(
-                () => scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == 25778),
-                scyllaService.Session,
-                scrope.ServiceProvider.GetRequiredService<ILogger<MigrationHandler<ScyllaAuction, ScyllaAuction>>>(),
-                scrope.ServiceProvider.GetRequiredService<IConnectionMultiplexer>(),
-                () => scyllaService.AuctionsTable,
-                a =>
-                {
-                    return Convert0ids(a);
-                }, "ENCHANTED_BOOK_no_start_del", ao => scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == 25778 && a.End == ao.End && a.IsSold == ao.IsSold && a.AuctionUid == ao.AuctionUid));
-        await handler.Migrate();
+        // delete old books
+        var blockSize = long.MaxValue / 2000;
+        for (long i = long.MinValue; i < long.MaxValue; i+=blockSize)
+        {
+            try
+            {
+                await scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == 25778 && a.End == default && a.IsSold == true && a.AuctionUid >= i && a.AuctionUid < i + blockSize).Delete().ExecuteAsync();
+                await scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == 25778 && a.End == default && a.IsSold == false && a.AuctionUid >= i && a.AuctionUid < i + blockSize).Delete().ExecuteAsync();
+            }
+            catch (System.Exception e)
+            {
+                logger.LogError(e, $"Error while deleting {i}-{i+blockSize}");
+                throw;
+            }
+        }
+
+        return;
+
         // from 0 - 200
-        await Parallel.ForEachAsync(Enumerable.Range(44, 200).ToList(), new ParallelOptions() { MaxDegreeOfParallelism = 1 }, async (i, c) =>
+        await Parallel.ForEachAsync(Enumerable.Range(117, 200).ToList(), new ParallelOptions() { MaxDegreeOfParallelism = 1 }, async (i, c) =>
         {
             var handler = new MigrationHandler<ScyllaAuction, ScyllaAuction>(
                 () => scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == i),
