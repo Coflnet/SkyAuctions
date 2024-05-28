@@ -74,29 +74,8 @@ public class SellsCollector : BackgroundService
     {
         Console.WriteLine("Migrating to weekly" + GetRandomGuid());
         using var scrope = scopeFactory.CreateScope();
-        // delete old books
-        var blockSize = long.MaxValue / 2000;
-        for (long i = long.MinValue; i < long.MaxValue; i+=blockSize)
-        {
-            try
-            {
-                var max = i + blockSize;
-                var time = default(DateTime);
-                await scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == 25778 && a.End == time && a.IsSold && a.AuctionUid >= i && a.AuctionUid < max).Delete().ExecuteAsync();
-                await scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == 25778 && a.End == time && !a.IsSold && a.AuctionUid >= i && a.AuctionUid < max).Delete().ExecuteAsync();
-                logger.LogInformation($"Deleted {i}-{i+blockSize}");
-            }
-            catch (System.Exception e)
-            {
-                logger.LogError(e, $"Error while deleting {i}-{i+blockSize}");
-                throw;
-            }
-        }
-
-        return;
-
         // from 0 - 200
-        await Parallel.ForEachAsync(Enumerable.Range(117, 200).ToList(), new ParallelOptions() { MaxDegreeOfParallelism = 1 }, async (i, c) =>
+        await Parallel.ForEachAsync(Enumerable.Range(50, 200).ToList(), new ParallelOptions() { MaxDegreeOfParallelism = 1 }, async (i, c) =>
         {
             var handler = new MigrationHandler<ScyllaAuction, ScyllaAuction>(
                 () => scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == i),
@@ -108,8 +87,9 @@ public class SellsCollector : BackgroundService
                 {
                     return Convert0ids(a);
                 }, "ENCHANTED_BOOK_" + i);
-            // await handler.Migrate();
-            await DeleteHourly(i, "ENCHANTED_BOOK");
+            //await handler.Migrate();
+            if (i > 100)
+                await DeleteHourly(i, "ENCHANTED_BOOK");
             var handler2 = new MigrationHandler<ScyllaAuction, ScyllaAuction>(
                 () => scyllaService.AuctionsTable.Where(a => a.Tag == "unknown" && a.TimeKey == i),
                 scyllaService.Session,
@@ -121,7 +101,8 @@ public class SellsCollector : BackgroundService
                     return Convert0ids(a);
                 }, "unknown" + i);
             //  await handler2.Migrate();
-            await DeleteHourly(i, "unknown");
+            if (i < 100)
+                await DeleteHourly(i, "unknown");
         });
     }
 
@@ -129,7 +110,7 @@ public class SellsCollector : BackgroundService
     {
         for (int d = 0; d < 7; d++)
         {
-            for (int h = 22; h < 24; h++)
+            for (int h = -0; h < 24; h++)
             {
                 var maxEnd = new DateTime(2019, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddDays(i * 7 + d).AddHours(h + 2);
                 var start = maxEnd.AddHours(-10);
