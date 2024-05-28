@@ -80,8 +80,10 @@ public class SellsCollector : BackgroundService
         {
             try
             {
-                await scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == 25778 && a.End == default && a.IsSold == true && a.AuctionUid >= i && a.AuctionUid < i + blockSize).Delete().ExecuteAsync();
-                await scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == 25778 && a.End == default && a.IsSold == false && a.AuctionUid >= i && a.AuctionUid < i + blockSize).Delete().ExecuteAsync();
+                var max = i + blockSize;
+                var time = default(DateTime);
+                await scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == 25778 && a.End == time && a.IsSold && a.AuctionUid >= i && a.AuctionUid < max).Delete().ExecuteAsync();
+                await scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == 25778 && a.End == time && !a.IsSold && a.AuctionUid >= i && a.AuctionUid < max).Delete().ExecuteAsync();
             }
             catch (System.Exception e)
             {
