@@ -1,12 +1,14 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Cassandra;
 using Cassandra.Data.Linq;
 using Cassandra.Mapping;
 using Microsoft.Extensions.Logging;
+using Newtonsoft.Json;
 using Prometheus;
 using StackExchange.Redis;
 
@@ -23,10 +25,10 @@ public class MigrationHandler<T, TNew>
     Counter migrated;
     private int pageSize = 2000;
     private string migrationName;
-    private Func<T,CqlQuery<T>> oldDelete = null;
+    private Func<T, CqlQuery<T>> oldDelete = null;
 
     public MigrationHandler(Func<CqlQuery<T>> oldTableFactory, ISession session, ILogger<MigrationHandler<T, TNew>> logger,
-            IConnectionMultiplexer redis, Func<Table<TNew>> newTableFactory, Func<T, TNew> converter, string migrationName, Func<T,CqlQuery<T>> deleteOld = null)
+            IConnectionMultiplexer redis, Func<Table<TNew>> newTableFactory, Func<T, TNew> converter, string migrationName, Func<T, CqlQuery<T>> deleteOld = null)
     {
         this.oldTableFactory = oldTableFactory;
         this.session = session;
@@ -82,7 +84,7 @@ public class MigrationHandler<T, TNew>
                     {
                         logger.LogError(e, "Batch insert failed, {attempt}", i);
                         await Task.Delay(2000 * i, stoppingToken);
-                        if(i == 9)
+                        if (i == 9)
                             throw;
                     }
                     finally
@@ -104,7 +106,7 @@ public class MigrationHandler<T, TNew>
     private async Task<int> InsertBatch(string prefix, IDatabase db, int offset, IPage<T> page, int attempt = 0)
     {
         var batchToInsert = page;
-        if(batchToInsert == null)
+        if (batchToInsert == null)
             return 0;
         var batches = Batch(batchToInsert, (int)(300 / Math.Pow(2, attempt)));
         await Parallel.ForEachAsync(batches, new ParallelOptions() { MaxDegreeOfParallelism = 5 }, async (batch, c) =>
@@ -163,7 +165,7 @@ public class MigrationHandler<T, TNew>
         }
         batchStatement.SetConsistencyLevel(ConsistencyLevel.Quorum);
         await session.ExecuteAsync(batchStatement);
-        if(oldDelete == null)
+        if (oldDelete == null)
             return;
         var oldTable = oldTableFactory();
         var deleteBatch = new BatchStatement();
@@ -173,6 +175,7 @@ public class MigrationHandler<T, TNew>
         }
         deleteBatch.SetConsistencyLevel(ConsistencyLevel.Quorum);
         await session.ExecuteAsync(deleteBatch);
+        logger.LogInformation("Deleted old entries first: {uuid}", JsonConvert.SerializeObject(batchToInsert.First()));
     }
 
     private async Task<IPage<T>> GetOldTable(byte[]? pagingState = null)
