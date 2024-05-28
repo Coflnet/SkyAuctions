@@ -85,10 +85,8 @@ public class SellsCollector : BackgroundService
                     return Convert0ids(a);
                 }, "ENCHANTED_BOOK_no_start", ao => scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == 25778 && a.End == DateTime.MinValue && a.IsSold && a.AuctionUid == ao.AuctionUid));
         await handler.Migrate();
-        await DeleteHourly(25778, "ENCHANTED_BOOK");
-        return;
         // from 0 - 200
-        await Parallel.ForEachAsync(Enumerable.Range(43, 200).ToList(), new ParallelOptions() { MaxDegreeOfParallelism = 1 }, async (i, c) =>
+        await Parallel.ForEachAsync(Enumerable.Range(44, 200).ToList(), new ParallelOptions() { MaxDegreeOfParallelism = 1 }, async (i, c) =>
         {
             var handler = new MigrationHandler<ScyllaAuction, ScyllaAuction>(
                 () => scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == i),
@@ -124,7 +122,7 @@ public class SellsCollector : BackgroundService
             for (int h = 0; h < 24; h++)
             {
                 var maxEnd = new DateTime(2019, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddDays(i * 7 + d).AddHours(h);
-                var start = maxEnd.AddHours(-1);
+                var start = maxEnd.AddHours(-10);
 
                 try
                 {
@@ -135,7 +133,7 @@ public class SellsCollector : BackgroundService
                     logger.LogError(e, $"Timeout Error while deleting {i} {tag} {maxEnd}");
                     for (int m = 0; m < 60; m++)
                     {
-                        var adjustedEnd = maxEnd.AddMinutes(m - 60);
+                        var adjustedEnd = maxEnd.AddMinutes(m - 58);
                         try
                         {
                             await NewMethod(i, tag, adjustedEnd, adjustedEnd - TimeSpan.FromMinutes(5));
@@ -151,9 +149,9 @@ public class SellsCollector : BackgroundService
 
         async Task NewMethod(int i, string tag, DateTime maxEnd, DateTime start)
         {
-            await scyllaService.AuctionsTable.Where(a => a.Tag == tag && a.TimeKey == i && a.IsSold && a.End < maxEnd && a.End >= start).Delete().ExecuteAsync();
-            await scyllaService.AuctionsTable.Where(a => a.Tag == tag && a.TimeKey == i && !a.IsSold && a.End < maxEnd && a.End >= start).Delete().ExecuteAsync();
-            logger.LogInformation($"Deleted {i} {tag} {maxEnd}");
+            await scyllaService.AuctionsTable.Where(a => a.Tag == tag && a.TimeKey == i && a.IsSold && a.End <= maxEnd && a.End >= start).Delete().ExecuteAsync();
+            await scyllaService.AuctionsTable.Where(a => a.Tag == tag && a.TimeKey == i && !a.IsSold && a.End <= maxEnd && a.End >= start).Delete().ExecuteAsync();
+            logger.LogInformation($"Deleted {i} {tag} {start}-{maxEnd}");
         }
     }
 
