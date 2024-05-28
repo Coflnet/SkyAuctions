@@ -83,7 +83,7 @@ public class SellsCollector : BackgroundService
                 a =>
                 {
                     return Convert0ids(a);
-                }, "ENCHANTED_BOOK_no_start", ao => scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == 25778 && a.End == DateTime.MinValue && a.IsSold && a.AuctionUid == ao.AuctionUid));
+                }, "ENCHANTED_BOOK_no_start_del", ao => scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == 25778 && a.End == ao.End && a.IsSold == ao.IsSold && a.AuctionUid == ao.AuctionUid));
         await handler.Migrate();
         // from 0 - 200
         await Parallel.ForEachAsync(Enumerable.Range(44, 200).ToList(), new ParallelOptions() { MaxDegreeOfParallelism = 1 }, async (i, c) =>
@@ -98,7 +98,7 @@ public class SellsCollector : BackgroundService
                 {
                     return Convert0ids(a);
                 }, "ENCHANTED_BOOK_" + i);
-            await handler.Migrate();
+            // await handler.Migrate();
             await DeleteHourly(i, "ENCHANTED_BOOK");
             var handler2 = new MigrationHandler<ScyllaAuction, ScyllaAuction>(
                 () => scyllaService.AuctionsTable.Where(a => a.Tag == "unknown" && a.TimeKey == i),
@@ -110,7 +110,7 @@ public class SellsCollector : BackgroundService
                 {
                     return Convert0ids(a);
                 }, "unknown" + i);
-            await handler2.Migrate();
+            //  await handler2.Migrate();
             await DeleteHourly(i, "unknown");
         });
     }

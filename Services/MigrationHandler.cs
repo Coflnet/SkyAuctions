@@ -164,7 +164,7 @@ public class MigrationHandler<T, TNew>
             batchStatement.Add(newTable.Insert(converter(score)));
         }
         batchStatement.SetConsistencyLevel(ConsistencyLevel.Quorum);
-        await session.ExecuteAsync(batchStatement);
+       // await session.ExecuteAsync(batchStatement);
         if (oldDelete == null)
             return;
         var oldTable = oldTableFactory();
