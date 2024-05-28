@@ -168,7 +168,12 @@ public class ScyllaService
         if (tag == "ENCHANTED_BOOK" || tag == "unknown" || tag == null)
         {
             splitSize = 0.5;
+            if(targetDate < new DateTime(2000, 6, 1))
+            {
+                return (short)Random.Shared.Next(0, 30);
+            }
         }
+        
         return (short)((targetDate.Ticks - startDate.Ticks) / TimeSpan.FromDays(splitSize).Ticks);
     }
 

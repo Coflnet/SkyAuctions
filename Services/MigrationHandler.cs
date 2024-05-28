@@ -169,7 +169,7 @@ public class MigrationHandler<T, TNew>
         var deleteBatch = new BatchStatement();
         foreach (var score in batchToInsert)
         {
-            deleteBatch.Add(oldDelete(score));
+            deleteBatch.Add(oldDelete(score).Delete());
         }
         deleteBatch.SetConsistencyLevel(ConsistencyLevel.Quorum);
         await session.ExecuteAsync(deleteBatch);
