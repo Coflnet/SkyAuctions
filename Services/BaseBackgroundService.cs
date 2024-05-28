@@ -83,7 +83,7 @@ public class SellsCollector : BackgroundService
                 a =>
                 {
                     return Convert0ids(a);
-                }, "ENCHANTED_BOOK_no_start", ao => scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == 25778 && a.Start == DateTime.MinValue && a.IsSold && a.AuctionUid == ao.AuctionUid));
+                }, "ENCHANTED_BOOK_no_start", ao => scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == 25778 && a.End == DateTime.MinValue && a.IsSold && a.AuctionUid == ao.AuctionUid));
         await handler.Migrate();
         await DeleteHourly(25778, "ENCHANTED_BOOK");
         return;
