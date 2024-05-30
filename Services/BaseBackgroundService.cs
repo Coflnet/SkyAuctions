@@ -75,7 +75,7 @@ public class SellsCollector : BackgroundService
         Console.WriteLine("Migrating to weekly" + GetRandomGuid());
         using var scrope = scopeFactory.CreateScope();
         // from 0 - 200
-        await Parallel.ForEachAsync(Enumerable.Range(50, 200).ToList(), new ParallelOptions() { MaxDegreeOfParallelism = 1 }, async (i, c) =>
+        await Parallel.ForEachAsync(Enumerable.Range(50, 150).ToList(), new ParallelOptions() { MaxDegreeOfParallelism = 1 }, async (i, c) =>
         {
             var handler = new MigrationHandler<ScyllaAuction, ScyllaAuction>(
                 () => scyllaService.AuctionsTable.Where(a => a.Tag == "ENCHANTED_BOOK" && a.TimeKey == i),
@@ -140,7 +140,8 @@ public class SellsCollector : BackgroundService
 
         async Task NewMethod(int i, string tag, DateTime maxEnd, DateTime start)
         {
-            await scyllaService.AuctionsTable.Where(a => a.Tag == tag && a.TimeKey == i && a.IsSold && a.End <= maxEnd && a.End >= start).Delete().ExecuteAsync();
+            var statement = scyllaService.AuctionsTable.Where(a => a.Tag == tag && a.TimeKey == i && a.IsSold && a.End <= maxEnd && a.End >= start).Delete();
+            var res = await statement.ExecuteAsync();
             await scyllaService.AuctionsTable.Where(a => a.Tag == tag && a.TimeKey == i && !a.IsSold && a.End <= maxEnd && a.End >= start).Delete().ExecuteAsync();
             logger.LogInformation($"Deleted {i} {tag} {start}-{maxEnd}");
         }
