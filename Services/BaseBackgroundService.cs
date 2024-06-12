@@ -51,7 +51,7 @@ public class SellsCollector : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await scyllaService.Create();
-        await MigrateToWeekly();
+       // await MigrateToWeekly();
         logger.LogInformation($"Finished completely");
         await Task.Delay(1000);
 
