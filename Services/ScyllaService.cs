@@ -75,7 +75,7 @@ public class ScyllaService
         ScyllaAuction converted = ToCassandra(auction);
         // check if exists
         var timeKey = GetWeekOrDaysSinceStart(auction.Tag, auction.End);
-        var tag = converted.Tag;
+        var tag = GetTag(auction);
         var sold = converted.IsSold;
         var existing = await AuctionsTable.Where(a => a.Tag == tag && a.TimeKey == timeKey && a.IsSold == sold && a.End == converted.End && a.AuctionUid == converted.AuctionUid).Select(a => a.Auctioneer).FirstOrDefault().ExecuteAsync();
         if (existing != default && converted.Auctioneer == existing)
@@ -141,7 +141,7 @@ public class ScyllaService
             HighestBidAmount = auction.HighestBidAmount,
             HighestBidder = highestBidder == Guid.Empty ? GetRandomGuid() : highestBidder,
             ItemName = auction.ItemName,
-            Tag = auction.Tag ?? "unknown",
+            Tag = GetTag(auction),
             Tier = auction.Tier.ToString(),
             StartingBid = auction.StartingBid,
             ItemUid = itemUid == 0 ? Random.Shared.Next(1, MaxRandomItemUid) : itemUid,
@@ -159,6 +159,12 @@ public class ScyllaService
         };
         return converted;
     }
+
+    private static string GetTag(SaveAuction auction)
+    {
+        return auction.Tag ?? "unknown";
+    }
+
     private static Guid GetRandomGuid()
     {
         // 00000000-0000-0000-0000-00000000xxxx generate random last 4 digits
