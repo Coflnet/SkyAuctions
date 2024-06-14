@@ -47,7 +47,16 @@ public class RestoreService
                         .FirstAsync();
         if (auction == null)
             return; // already deleted
-        var archivedObj = await archivedVersionTask;
+        SaveAuction archivedObj = null;
+        try
+        {
+            archivedObj = await archivedVersionTask;
+        }
+        catch (Exception)
+        {
+            await scyllaService.InsertAuction(auction);
+            throw;
+        }
         archivedObj.FlatenedNBT = null;
         AdjustForOptimizations(archivedObj);
         var compareAuction = ScyllaService.CassandraToOld(ScyllaService.ToCassandra(auction));
