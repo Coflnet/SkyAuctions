@@ -74,7 +74,8 @@ public class ScyllaService
             return;
         ScyllaAuction converted = ToCassandra(auction);
         // check if exists
-        var existing = (await AuctionsTable.Where(a => a.Tag == converted.Tag && a.IsSold == converted.IsSold && a.End == converted.End && a.Uuid == converted.Uuid).Select(a => a.Auctioneer).ExecuteAsync()).FirstOrDefault();
+        var timeKey = GetWeekOrDaysSinceStart(auction.Tag, auction.End);
+        var existing = (await AuctionsTable.Where(a => a.Tag == converted.Tag && a.TimeKey == timeKey && a.IsSold == converted.IsSold && a.End == converted.End && a.Uuid == converted.Uuid).Select(a => a.Auctioneer).ExecuteAsync()).FirstOrDefault();
         if (existing != null && converted.Auctioneer == existing)
         {
             if (Random.Shared.NextDouble() < 0.01)
@@ -168,12 +169,12 @@ public class ScyllaService
         if (tag == "ENCHANTED_BOOK" || tag == "unknown" || tag == null)
         {
             splitSize = 0.5;
-            if(targetDate < new DateTime(2000, 6, 1))
+            if (targetDate < new DateTime(2000, 6, 1))
             {
                 return (short)Random.Shared.Next(0, 30);
             }
         }
-        
+
         return (short)((targetDate.Ticks - startDate.Ticks) / TimeSpan.FromDays(splitSize).Ticks);
     }
 
