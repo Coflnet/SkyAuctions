@@ -77,7 +77,9 @@ public class ScyllaService
         var timeKey = GetWeekOrDaysSinceStart(auction.Tag, auction.End);
         var tag = GetTag(auction);
         var sold = converted.IsSold;
-        var existing = await AuctionsTable.Where(a => a.Tag == tag && a.TimeKey == timeKey && a.IsSold == sold && a.End == converted.End && a.AuctionUid == converted.AuctionUid).Select(a => a.Auctioneer).FirstOrDefault().ExecuteAsync();
+        var end = converted.End;
+        var uid = converted.AuctionUid;
+        var existing = await AuctionsTable.Where(a => a.Tag == tag && a.TimeKey == timeKey && a.IsSold == sold && a.End == end && a.AuctionUid == uid).Select(a => a.Auctioneer).FirstOrDefault().ExecuteAsync();
         if (existing != default && converted.Auctioneer == existing)
         {
             if (Random.Shared.NextDouble() < 0.01)
