@@ -75,8 +75,10 @@ public class ScyllaService
         ScyllaAuction converted = ToCassandra(auction);
         // check if exists
         var timeKey = GetWeekOrDaysSinceStart(auction.Tag, auction.End);
-        var existing = (await AuctionsTable.Where(a => a.Tag == converted.Tag && a.TimeKey == timeKey && a.IsSold == converted.IsSold && a.End == converted.End && a.Uuid == converted.Uuid).Select(a => a.Auctioneer).ExecuteAsync()).FirstOrDefault();
-        if (existing != null && converted.Auctioneer == existing)
+        var tag = converted.Tag;
+        var sold = converted.IsSold;
+        var existing = await AuctionsTable.Where(a => a.Tag == tag && a.TimeKey == timeKey && a.IsSold == sold && a.End == converted.End && a.AuctionUid == converted.AuctionUid).Select(a => a.Auctioneer).FirstOrDefault().ExecuteAsync();
+        if (existing != default && converted.Auctioneer == existing)
         {
             if (Random.Shared.NextDouble() < 0.01)
                 Console.WriteLine("Already exists");
