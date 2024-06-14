@@ -68,7 +68,8 @@ public class RestoreService
 
         context.Remove(auction);
         context.RemoveRange(auction.Enchantments);
-        context.RemoveRange(auction.NbtData);
+        if (auction.NbtData != null)
+            context.RemoveRange(auction.NbtData);
         context.RemoveRange(auction.NBTLookup);
         context.RemoveRange(auction.CoopMembers);
         context.RemoveRange(auction.Bids);
