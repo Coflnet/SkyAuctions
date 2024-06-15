@@ -269,7 +269,7 @@ public class ScyllaService
 
     public SaveAuction CombineVersions(SaveAuction[] auctions)
     {
-        var combined = auctions.Where(a => a.AuctioneerId != a.Uuid) // exclude auctions where archiving was messed up
+        var combined = auctions //.Where(a => a.AuctioneerId != a.Uuid) // exclude auctions where archiving was messed up
         .Aggregate((a, b) =>
         {
             // add unique bids
