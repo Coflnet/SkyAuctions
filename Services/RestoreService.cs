@@ -68,7 +68,7 @@ public class RestoreService
         };
         if(archivedObj.AuctioneerId == archivedObj.Uuid)
         {
-            archivedObj.AuctioneerId = compareAuction.Uuid;
+            archivedObj.AuctioneerId = compareAuction.AuctioneerId;
             await scyllaService.InsertAuction(archivedObj);
             logger.LogInformation("Fixed auctioneer id for auction {0}", auctionid);
         }
