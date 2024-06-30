@@ -1,14 +1,11 @@
 using System;
 using System.Linq;
 using System.Threading.Tasks;
-using Cassandra;
 using Cassandra.Data.Linq;
-using Castle.Core.Logging;
 using Coflnet.Sky.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 
 namespace Coflnet.Sky.Auctions;
 
