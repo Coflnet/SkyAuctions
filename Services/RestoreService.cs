@@ -1,9 +1,12 @@
 using System;
 using System.Linq;
 using System.Threading.Tasks;
+using Cassandra;
 using Cassandra.Data.Linq;
+using Castle.Core.Logging;
 using Coflnet.Sky.Core;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
@@ -12,13 +15,14 @@ namespace Coflnet.Sky.Auctions;
 public class RestoreService
 {
     private readonly ScyllaService scyllaService;
-
+    private readonly ILogger<RestoreService> logger;
     private readonly HypixelContext context;
 
-    public RestoreService(ScyllaService scyllaService, HypixelContext context)
+    public RestoreService(ScyllaService scyllaService, HypixelContext context, ILogger<RestoreService> logger)
     {
         this.scyllaService = scyllaService;
         this.context = context;
+        this.logger = logger;
     }
 
     /// <summary>
@@ -65,6 +69,12 @@ public class RestoreService
         {
             DateTimeZoneHandling = DateTimeZoneHandling.Utc
         };
+        if(archivedObj.AuctioneerId == archivedObj.Uuid)
+        {
+            archivedObj.AuctioneerId = compareAuction.Uuid;
+            await scyllaService.InsertAuction(archivedObj);
+            logger.LogInformation("Fixed auctioneer id for auction {0}", auctionid);
+        }
         var archivedVersion = JsonConvert.SerializeObject(archivedObj);
         var toBeDeleted = JsonConvert.SerializeObject(compareAuction);
         if (toBeDeleted != archivedVersion)
