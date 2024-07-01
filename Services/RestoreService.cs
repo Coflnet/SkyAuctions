@@ -59,19 +59,19 @@ public class RestoreService
             throw;
         }
         archivedObj.FlatenedNBT = null;
-        AdjustForOptimizations(archivedObj);
         var compareAuction = ScyllaService.CassandraToOld(ScyllaService.ToCassandra(auction));
-        AdjustForOptimizations(compareAuction);
-        var settings = new JsonSerializerSettings()
-        {
-            DateTimeZoneHandling = DateTimeZoneHandling.Utc
-        };
         if(archivedObj.AuctioneerId == archivedObj.Uuid)
         {
             archivedObj.AuctioneerId = compareAuction.AuctioneerId;
             await scyllaService.InsertAuction(archivedObj);
             logger.LogInformation("Fixed auctioneer id for auction {0}", auctionid);
         }
+        AdjustForOptimizations(archivedObj);
+        AdjustForOptimizations(compareAuction);
+        var settings = new JsonSerializerSettings()
+        {
+            DateTimeZoneHandling = DateTimeZoneHandling.Utc
+        };
         var archivedVersion = JsonConvert.SerializeObject(archivedObj);
         var toBeDeleted = JsonConvert.SerializeObject(compareAuction);
         if (toBeDeleted != archivedVersion)
