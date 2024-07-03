@@ -118,7 +118,7 @@ public class ScyllaService
         {
             root.Add(new NbtInt("anvil_uses", auction.AnvilUses));
         }
-        if (auction.Reforge != ItemReferences.Reforge.None)
+        if (auction.Reforge != ItemReferences.Reforge.None && !root.TryGet("modifier", out _))
         {
             root.Add(new NbtString("modifier", auction.Reforge.ToString()));
         }
