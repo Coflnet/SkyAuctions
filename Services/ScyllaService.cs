@@ -114,7 +114,7 @@ public class ScyllaService
         var auctionUuid = Guid.Parse(auction.Uuid);
         auction = new SaveAuction(auction);
         var root = auction.NbtData?.Root() ?? new NbtCompound("i");
-        if (auction.AnvilUses > 0)
+        if (auction.AnvilUses > 0 && !root.TryGet("anvil_uses", out _))
         {
             root.Add(new NbtInt("anvil_uses", auction.AnvilUses));
         }
