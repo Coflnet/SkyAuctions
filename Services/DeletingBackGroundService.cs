@@ -41,28 +41,36 @@ public class DeletingBackGroundService : BackgroundService
         var biggestDate = new DateTime();
         while (biggestDate < threeYearsAgo)
         {
-            using var scope = scopeFactory.CreateScope();
             using var context = new HypixelContext();
-            var service = scope.ServiceProvider.GetRequiredService<RestoreService>();
             var batch = await context.Auctions.Take(100).ToListAsync();
             biggestDate = batch.LastOrDefault()?.End ?? DateTime.UtcNow;
-            foreach (var item in batch)
+            var w1 = DeleteBatch(threeYearsAgo, batch.Take(34).ToList());
+            var w2 = DeleteBatch(threeYearsAgo, batch.Skip(34).Take(33).ToList());
+            var w3 = DeleteBatch(threeYearsAgo, batch.Skip(67).ToList());
+            await Task.WhenAll(w1, w2, w3);
+        }
+    }
+
+    private async Task DeleteBatch(DateTime threeYearsAgo, List<SaveAuction> batch)
+    {
+        var scope = scopeFactory.CreateScope();
+        var service = scope.ServiceProvider.GetRequiredService<RestoreService>();
+        foreach (var item in batch)
+        {
+            if (item.End > threeYearsAgo)
             {
-                if (item.End > threeYearsAgo)
-                {
-                    logger.LogInformation($"Reached end date {item.End}");
-                    return;
-                }
-                try
-                {
-                    await service.RemoveAuction(Guid.Parse(item.Uuid));
-                    logger.LogInformation($"Deleted {item.Uuid}");
-                }
-                catch (Exception e)
-                {
-                    logger.LogError(e, $"Error while deleting {item.Uuid}");
-                    return;
-                }
+                logger.LogInformation($"Reached end date {item.End}");
+                return;
+            }
+            try
+            {
+                await service.RemoveAuction(Guid.Parse(item.Uuid));
+                logger.LogInformation($"Deleted {item.Uuid}");
+            }
+            catch (Exception e)
+            {
+                logger.LogError(e, $"Error while deleting {item.Uuid}");
+                return;
             }
         }
     }
