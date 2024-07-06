@@ -48,6 +48,13 @@ public class RestoreService
                         .FirstAsync();
         if (auction == null)
             return; // already deleted
+        if(auction.Tag == null && auction.AuctioneerId == null && auction.ProfileId == null && auction.HighestBidAmount == 0 &&auction.ItemCreatedAt < new DateTime(2010,1,1))
+        {
+            // not sure where they are from but they are baically uesless
+            context.Remove(auction);
+            await context.SaveChangesAsync();
+            return;
+        }
         SaveAuction archivedObj = null;
         try
         {
