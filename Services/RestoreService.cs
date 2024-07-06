@@ -60,7 +60,7 @@ public class RestoreService
         }
         archivedObj.FlatenedNBT = null;
         var compareAuction = ScyllaService.CassandraToOld(ScyllaService.ToCassandra(auction));
-        if(archivedObj.AuctioneerId == archivedObj.Uuid)
+        if (archivedObj.AuctioneerId == archivedObj.Uuid)
         {
             archivedObj.AuctioneerId = compareAuction.AuctioneerId;
             await scyllaService.InsertAuction(archivedObj);
@@ -74,7 +74,7 @@ public class RestoreService
         };
         var archivedVersion = JsonConvert.SerializeObject(archivedObj);
         var toBeDeleted = JsonConvert.SerializeObject(compareAuction);
-        if (toBeDeleted != archivedVersion)
+        if (toBeDeleted != archivedVersion && archivedObj.HighestBidAmount <= compareAuction.HighestBidAmount)
         {
             Console.WriteLine($"Archived version: {archivedVersion}");
             Console.WriteLine($"To be deleted   : {toBeDeleted}");
@@ -107,7 +107,7 @@ public class RestoreService
                     bid.Timestamp = DateTime.SpecifyKind(bid.Timestamp, DateTimeKind.Utc);
                 }
             }
-            archivedObj.Bids = archivedObj.Bids.OrderBy(b => b.Timestamp).ThenBy(b=>b.Amount).ToList();
+            archivedObj.Bids = archivedObj.Bids.OrderBy(b => b.Timestamp).ThenBy(b => b.Amount).ToList();
             archivedObj.Enchantments = archivedObj.Enchantments.OrderBy(e => e.Type).ToList();
             archivedObj.FlatenedNBT = archivedObj.FlatenedNBT.OrderBy(n => n.Key).ToDictionary(n => n.Key, n => n.Value);
         }
