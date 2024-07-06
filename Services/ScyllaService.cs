@@ -285,6 +285,10 @@ public class ScyllaService
                 a.Start = b.Start;
             if (a.ProfileId == a.AuctioneerId) // it defaults to the auctioneer id
                 a.ProfileId = b.ProfileId;
+            if(a.HighestBidAmount == 0 && a.Bids?.Count > 0)
+            {
+                a.HighestBidAmount = a.Bids.Max(b => b.Amount);
+            }
             return a;
         });
         return combined;
