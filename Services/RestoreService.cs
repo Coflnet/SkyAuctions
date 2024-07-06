@@ -79,7 +79,10 @@ public class RestoreService
             Console.WriteLine($"Archived version: {archivedVersion}");
             Console.WriteLine($"To be deleted   : {toBeDeleted}");
             await scyllaService.InsertAuction(auction);
-            throw new CoflnetException("no_match", "Archived version does not match to be deleted version");
+            if (archivedObj.End != compareAuction.End || archivedObj.Start != compareAuction.Start || archivedObj.ItemCreatedAt != compareAuction.ItemCreatedAt)
+                await Task.Delay(TimeSpan.FromMinutes(5));
+            else
+                throw new CoflnetException("no_match", "Archived version does not match to be deleted version");
         }
 
         context.Remove(auction);
