@@ -117,7 +117,7 @@ public class RestoreService
                     bid.Timestamp = DateTime.SpecifyKind(bid.Timestamp, DateTimeKind.Utc);
                 }
             }
-            archivedObj.Bids = archivedObj.Bids.OrderBy(b => b.Timestamp).ThenBy(b => b.Amount).ToList();
+            archivedObj.Bids = archivedObj.Bids.OrderBy(b => b.Amount).ThenBy(b => b.Timestamp).ToList();
             archivedObj.Enchantments = archivedObj.Enchantments.OrderBy(e => e.Type).ToList();
             archivedObj.FlatenedNBT = archivedObj.FlatenedNBT.OrderBy(n => n.Key).ToDictionary(n => n.Key, n => n.Value);
         }
