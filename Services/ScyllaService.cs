@@ -158,7 +158,7 @@ public class ScyllaService
             ItemBytes = auction.NbtData?.data?.ToArray(),
             IsSold = isSold,
             ItemCreatedAt = auction.ItemCreatedAt,
-            ProfileId = Guid.Parse(auction.ProfileId ?? auction.AuctioneerId),
+            ProfileId = Guid.Parse(auction.ProfileId ?? auction.AuctioneerId ?? Guid.Empty.ToString()),
             NbtLookup = auction.FlatenedNBT,
             Count = auction.Count,
             Bids = bids,
