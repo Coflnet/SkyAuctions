@@ -29,8 +29,8 @@ public class DeletingBackGroundService : BackgroundService
     {
         while (!stoppingToken.IsCancellationRequested)
         {
-            await Task.Delay(1000);
             await Delete();
+            await Task.Delay(5000);
         }
     }
 
@@ -44,10 +44,12 @@ public class DeletingBackGroundService : BackgroundService
             using var context = new HypixelContext();
             var batch = await context.Auctions.Take(100).ToListAsync();
             biggestDate = batch.LastOrDefault()?.End ?? DateTime.UtcNow;
+            logger.LogInformation("Deleting batch");
             var w1 = DeleteBatch(threeYearsAgo, batch.Take(34).ToList());
             var w2 = DeleteBatch(threeYearsAgo, batch.Skip(34).Take(33).ToList());
             var w3 = DeleteBatch(threeYearsAgo, batch.Skip(67).ToList());
             await Task.WhenAll(w1, w2, w3);
+            logger.LogInformation("Deleted batch");
         }
     }
 
@@ -55,7 +57,7 @@ public class DeletingBackGroundService : BackgroundService
     {
         var scope = scopeFactory.CreateScope();
         var service = scope.ServiceProvider.GetRequiredService<RestoreService>();
-        foreach (var item in batch)
+        foreach (var item in batch.OrderBy(i=>i.End))
         {
             if (item.End > threeYearsAgo)
             {
