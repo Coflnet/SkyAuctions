@@ -58,7 +58,7 @@ public class RestoreService
                 logger.LogInformation("Auction {0} not found in scylla, inserting", id);
                 var fromDb = auctions.FirstOrDefault(a => Guid.Parse(a.Uuid) == id);
                 await scyllaService.InsertAuction(fromDb);
-                throw;
+                return await scyllaService.GetCombinedAuction(id);
             }
         });
         var archivedAuctions = (await Task.WhenAll(archivedVersionTask)).ToDictionary(a => a.Uuid);
