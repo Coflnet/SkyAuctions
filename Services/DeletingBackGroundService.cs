@@ -57,21 +57,22 @@ public class DeletingBackGroundService : BackgroundService
     {
         var scope = scopeFactory.CreateScope();
         var service = scope.ServiceProvider.GetRequiredService<RestoreService>();
-        foreach (var item in batch.OrderBy(i=>i.End))
+        foreach (var item in batch.OrderBy(i => i.End).Batch(8))
         {
-            if (item.End > threeYearsAgo)
+            if (item.First().End > threeYearsAgo)
             {
-                logger.LogInformation($"Reached end date {item.End}");
+                logger.LogInformation($"Reached end date {item.First().End}");
                 return;
             }
+            var guids = item.Select(i => Guid.Parse(i.Uuid)).ToArray();
             try
             {
-                await service.RemoveAuction(Guid.Parse(item.Uuid));
-                logger.LogInformation($"Deleted {item.Uuid}");
+                await service.RemoveAuction(guids);
+                logger.LogInformation($"Deleted {string.Join(", ", guids)}");
             }
             catch (Exception e)
             {
-                logger.LogError(e, $"Error while deleting {item.Uuid}");
+                logger.LogError(e, $"Error while deleting {string.Join(", ", guids)}");
                 return;
             }
         }

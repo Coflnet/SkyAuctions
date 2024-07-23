@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Cassandra.Data.Linq;
@@ -35,35 +36,60 @@ public class RestoreService
         return auction;
     }
 
-    public async Task RemoveAuction(Guid auctionid)
+    public async Task RemoveAuction(params Guid[] auctionids)
     {
-        var uid = AuctionService.Instance.GetId(auctionid.ToString("N"));
-        var archivedVersionTask = scyllaService.GetCombinedAuction(auctionid);
-        var auction = await context.Auctions.Where(a => a.UId == uid)
+        var uids = auctionids.Select(id => AuctionService.Instance.GetId(id.ToString("N")));
+        var archivedVersionTask = auctionids.Select(id => scyllaService.GetCombinedAuction(id));
+        var auctions = await context.Auctions.Where(a => uids.Contains(a.UId))
                         .Include(a => a.Enchantments)
                         .Include(a => a.NbtData)
                         .Include(a => a.NBTLookup)
                         .Include(a => a.CoopMembers)
                         .Include(a => a.Bids)
-                        .FirstAsync();
-        if (auction == null)
-            return; // already deleted
-        if(auction.Tag == null && auction.AuctioneerId == null && auction.ProfileId == null && auction.HighestBidAmount == 0 &&auction.ItemCreatedAt < new DateTime(2010,1,1))
+                        .ToListAsync();
+
+        var archivedAuctions = (await Task.WhenAll(archivedVersionTask)).ToDictionary(a => a.Uuid);
+        var auction = auctions.First();
+        await NewMethod(archivedAuctions, auction);
+        try
         {
-            // not sure where they are from but they are baically uesless
-            context.Remove(auction);
             await context.SaveChangesAsync();
-            return;
         }
+        catch (Exception e)
+        {
+            if (auctionids.Length > 1)
+            {
+                await RemoveAuction(auctionids.Take(auctionids.Length / 2).ToArray());
+                await RemoveAuction(auctionids.Skip(auctionids.Length / 2).ToArray());
+            }
+            else
+            {
+                logger.LogError(e, "Error while saving trying to delete {0}", auction.Uuid);
+                throw;
+            }
+        }
+    }
+
+    private async Task NewMethod(Dictionary<string, SaveAuction> archivedAuctions, SaveAuction auction)
+    {
         SaveAuction archivedObj = null;
         try
         {
-            archivedObj = await archivedVersionTask;
+            archivedObj = archivedAuctions[auction.Uuid];
         }
         catch (Exception)
         {
             await scyllaService.InsertAuction(auction);
             throw;
+        }
+        if (auction == null)
+            return; // already deleted
+        if (auction.Tag == null && auction.AuctioneerId == null && auction.ProfileId == null && auction.HighestBidAmount == 0 && auction.ItemCreatedAt < new DateTime(2010, 1, 1))
+        {
+            // not sure where they are from but they are baically uesless
+            context.Remove(auction);
+            await context.SaveChangesAsync();
+            return;
         }
         archivedObj.FlatenedNBT = null;
         var compareAuction = ScyllaService.CassandraToOld(ScyllaService.ToCassandra(auction));
@@ -71,7 +97,7 @@ public class RestoreService
         {
             archivedObj.AuctioneerId = compareAuction.AuctioneerId;
             await scyllaService.InsertAuction(archivedObj);
-            logger.LogInformation("Fixed auctioneer id for auction {0}", auctionid);
+            logger.LogInformation("Fixed auctioneer id for auction {0}", auction.Uuid);
         }
         AdjustForOptimizations(archivedObj);
         AdjustForOptimizations(compareAuction);
@@ -99,7 +125,6 @@ public class RestoreService
         context.RemoveRange(auction.NBTLookup);
         context.RemoveRange(auction.CoopMembers);
         context.RemoveRange(auction.Bids);
-        await context.SaveChangesAsync();
 
         static void AdjustForOptimizations(SaveAuction archivedObj)
         {
