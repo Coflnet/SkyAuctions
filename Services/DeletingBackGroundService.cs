@@ -58,7 +58,7 @@ public class DeletingBackGroundService : BackgroundService
     {
         var scope = scopeFactory.CreateScope();
         var service = scope.ServiceProvider.GetRequiredService<RestoreService>();
-        foreach (var item in batch.OrderBy(i => i.End).Batch(8))
+        foreach (var item in batch.OrderBy(i => i.End).Batch(16))
         {
             if (item.First().End > threeYearsAgo)
             {
