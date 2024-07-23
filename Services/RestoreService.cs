@@ -55,7 +55,6 @@ public class RestoreService
             }
             catch (System.Exception)
             {
-                logger.LogInformation("Auction {0} not found in scylla, inserting", id);
                 var fromDb = auctions.Where(a => Guid.Parse(a.Uuid) == id).ToList();
                 if (fromDb.Count == 0)
                 {
@@ -66,6 +65,7 @@ public class RestoreService
                 {
                     logger.LogWarning("Multiple auctions with id {0} found in database {count}", id, fromDb.Count);
                 }
+                logger.LogInformation("Auction {0} not found in scylla, inserting {full}", id, JsonConvert.SerializeObject(fromDb));
                 await scyllaService.InsertAuction(fromDb.First());
                 return await scyllaService.GetCombinedAuction(id);
             }
