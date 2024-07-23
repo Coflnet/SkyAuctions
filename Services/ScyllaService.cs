@@ -331,7 +331,7 @@ public class ScyllaService
             Enchantments = auction.Enchantments.Select(e => new Enchantment()
             {
                 Level = (byte)e.Value,
-                Type = (EnchantmentType)Enum.Parse(typeof(EnchantmentType), e.Key),
+                Type = Enum.TryParse<EnchantmentType>(e.Key, out var parsed) ? parsed : EnchantmentType.unknown,
             }).ToList(),
             UId = AuctionService.Instance.GetId(auction.Uuid.ToString()),
             Start = auction.Start,
