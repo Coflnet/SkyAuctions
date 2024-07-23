@@ -57,12 +57,12 @@ public class RestoreService
             {
                 logger.LogInformation("Auction {0} not found in scylla, inserting", id);
                 var fromDb = auctions.Where(a => Guid.Parse(a.Uuid) == id).ToList();
-                if(fromDb.Count == 0)
+                if (fromDb.Count == 0)
                 {
                     logger.LogWarning("Auction {0} not found in database", id);
                     return null;
                 }
-                if(fromDb.Count > 1)
+                if (fromDb.Count > 1)
                 {
                     logger.LogWarning("Multiple auctions with id {0} found in database {count}", id, fromDb.Count);
                 }
@@ -70,11 +70,13 @@ public class RestoreService
                 return await scyllaService.GetCombinedAuction(id);
             }
         });
-        var archivedAuctions = (await Task.WhenAll(archivedVersionTask)).ToDictionary(a => a.Uuid);
-        var auction = auctions.First();
-        await NewMethod(archivedAuctions, auction);
         try
         {
+            var archivedAuctions = (await Task.WhenAll(archivedVersionTask)).ToDictionary(a => a.Uuid);
+            foreach (var auction in auctions)
+            {
+                await NewMethod(archivedAuctions, auction);
+            }
             await context.SaveChangesAsync();
         }
         catch (Exception e)
@@ -86,7 +88,7 @@ public class RestoreService
             }
             else
             {
-                logger.LogError(e, "Error while saving trying to delete {0}", auction.Uuid);
+                logger.LogError(e, "Error while saving trying to delete {0}", auctions.First().Uuid);
                 throw;
             }
         }
