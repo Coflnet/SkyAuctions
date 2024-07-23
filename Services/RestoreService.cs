@@ -39,7 +39,6 @@ public class RestoreService
     public async Task RemoveAuction(params Guid[] auctionids)
     {
         var uids = auctionids.Select(id => AuctionService.Instance.GetId(id.ToString("N")));
-        var archivedVersionTask = auctionids.Select(id => scyllaService.GetCombinedAuction(id));
         var auctions = await context.Auctions.Where(a => uids.Contains(a.UId))
                         .Include(a => a.Enchantments)
                         .Include(a => a.NbtData)
@@ -48,6 +47,20 @@ public class RestoreService
                         .Include(a => a.Bids)
                         .ToListAsync();
 
+        var archivedVersionTask = auctionids.Select(async id =>
+        {
+            try
+            {
+                return await scyllaService.GetCombinedAuction(id);
+            }
+            catch (System.Exception)
+            {
+                logger.LogInformation("Auction {0} not found in scylla, inserting", id);
+                var fromDb = auctions.FirstOrDefault(a => Guid.Parse(a.Uuid) == id);
+                await scyllaService.InsertAuction(fromDb);
+                throw;
+            }
+        });
         var archivedAuctions = (await Task.WhenAll(archivedVersionTask)).ToDictionary(a => a.Uuid);
         var auction = auctions.First();
         await NewMethod(archivedAuctions, auction);
