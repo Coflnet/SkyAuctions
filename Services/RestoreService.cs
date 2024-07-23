@@ -65,8 +65,16 @@ public class RestoreService
                 {
                     logger.LogWarning("Multiple auctions with id {0} found in database {count}", id, fromDb.Count);
                 }
+                var auction = fromDb.First();
+                if (auction.Tag == null && auction.AuctioneerId == null && auction.ProfileId == null && auction.HighestBidAmount == 0 && auction.ItemCreatedAt < new DateTime(2010, 1, 1))
+                {
+                    // not sure where they are from but they are baically uesless
+                    context.Remove(auction);
+                    await context.SaveChangesAsync();
+                    return null;
+                }
                 logger.LogInformation("Auction {0} not found in scylla, inserting {full}", id, JsonConvert.SerializeObject(fromDb));
-                await scyllaService.InsertAuction(fromDb.First());
+                await scyllaService.InsertAuction(auction);
                 return await scyllaService.GetCombinedAuction(id);
             }
         });
@@ -108,13 +116,6 @@ public class RestoreService
         }
         if (auction == null)
             return; // already deleted
-        if (auction.Tag == null && auction.AuctioneerId == null && auction.ProfileId == null && auction.HighestBidAmount == 0 && auction.ItemCreatedAt < new DateTime(2010, 1, 1))
-        {
-            // not sure where they are from but they are baically uesless
-            context.Remove(auction);
-            await context.SaveChangesAsync();
-            return;
-        }
         archivedObj.FlatenedNBT = null;
         var compareAuction = ScyllaService.CassandraToOld(ScyllaService.ToCassandra(auction));
         if (archivedObj.AuctioneerId == archivedObj.Uuid)
