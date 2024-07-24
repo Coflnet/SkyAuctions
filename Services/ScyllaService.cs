@@ -80,13 +80,13 @@ public class ScyllaService
         var end = converted.End;
         var uid = converted.AuctionUid;
         var existing = await AuctionsTable.Where(a => a.Tag == tag && a.TimeKey == timeKey && a.IsSold && a.End == end && a.AuctionUid == uid)
-                        .Select(a => a.Auctioneer).FirstOrDefault().ExecuteAsync();
+                        .Select(a => new { a.Auctioneer, a.HighestBidAmount }).FirstOrDefault().ExecuteAsync();
         if (existing == default)
         {
             existing = await AuctionsTable.Where(a => a.Tag == tag && a.TimeKey == timeKey && !a.IsSold && a.End == end && a.AuctionUid == uid)
-                        .Select(a => a.Auctioneer).FirstOrDefault().ExecuteAsync();
+                        .Select(a => new { a.Auctioneer, a.HighestBidAmount }).FirstOrDefault().ExecuteAsync();
         }
-        if (existing != default && converted.Auctioneer == existing)
+        if (existing != default && converted.Auctioneer == existing.Auctioneer && existing.HighestBidAmount == converted.HighestBidAmount)
         {
             if (Random.Shared.NextDouble() < 0.01)
                 Console.WriteLine("Already exists");
