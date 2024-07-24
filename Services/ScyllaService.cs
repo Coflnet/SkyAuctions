@@ -100,7 +100,6 @@ public class ScyllaService
         }
         batch = batch.Add(statement);
         batch.SetConsistencyLevel(ConsistencyLevel.LocalQuorum);
-        batch.SetTimestamp(converted.End);
         batch.SetBatchType(BatchType.Unlogged);
         batch.SetRetryPolicy(new DefaultRetryPolicy());
 
