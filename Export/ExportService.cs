@@ -88,7 +88,7 @@ public class ExportService : BackgroundService
         var end = GetTimeKey(request, "EndBefore");
         var start = GetTimeKey(request, "EndAfter");
 
-        var auctions = queryService.GetFiltered(request.ItemTag, request.Filters, start, end, 10).ToBlockingEnumerable();
+        var auctions = queryService.GetFiltered(request.ItemTag, request.Filters, start, end, 2000).ToBlockingEnumerable();
         if (request.Flags.HasFlag(ExportFlags.UniqueItems))
         {
             auctions = auctions.GroupBy(a => a.FlatenedNBT.GetValueOrDefault("uid", Random.Shared.Next().ToString())).Select(g => g.OrderByDescending(g => g.End).First());
