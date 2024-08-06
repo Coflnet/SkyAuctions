@@ -48,7 +48,7 @@ public class ExportService : BackgroundService
         var requests = (await exportRequests.ExecuteAsync()).ToList();
         foreach (var request in requests.OrderBy(r => r.RequestedAt))
         {
-            if (request.Status == ExportStatus.Pending)
+            if (request.Status != ExportStatus.Done)
                 pendingRequests.Enqueue(request);
             else
             {
