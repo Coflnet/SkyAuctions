@@ -45,7 +45,7 @@ public class ExportService : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         // load from db
-        var requests = await exportRequests.AllowFiltering().ExecuteAsync();
+        var requests = (await exportRequests.AllowFiltering().ExecuteAsync()).ToList();
         foreach (var request in requests.OrderBy(r => r.RequestedAt))
         {
             if (request.Status == ExportStatus.Pending)
@@ -55,6 +55,7 @@ public class ExportService : BackgroundService
                 logger.LogInformation($"Skipping {request.ByEmail} export for {request.ItemTag} request with status {request.Status}");
             }
         }
+        logger.LogInformation("Export service started {0}", pendingRequests.Count);
         while (!stoppingToken.IsCancellationRequested)
         {
             if (pendingRequests.Count > 0)
