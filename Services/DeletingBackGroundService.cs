@@ -27,6 +27,8 @@ public class DeletingBackGroundService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (System.Net.Dns.GetHostName().Contains("ekwav"))
+            return;
         while (!stoppingToken.IsCancellationRequested)
         {
             await Delete();

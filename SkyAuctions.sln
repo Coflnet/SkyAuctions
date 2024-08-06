@@ -1,0 +1,37 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.5.002.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "SkyAuctions", "SkyAuctions.csproj", "{72A3CC2B-A255-4180-AFD4-1169C5E112F3}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "hypixel", "..\dev\hypixel.csproj", "{A5F3E387-01A8-47F8-885D-C2279A6C6DAB}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SkyFilter", "..\SkyFilter\SkyFilter.csproj", "{E539E46E-A07E-495A-B944-CE44F1CAD927}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{72A3CC2B-A255-4180-AFD4-1169C5E112F3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{72A3CC2B-A255-4180-AFD4-1169C5E112F3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{72A3CC2B-A255-4180-AFD4-1169C5E112F3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{72A3CC2B-A255-4180-AFD4-1169C5E112F3}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A5F3E387-01A8-47F8-885D-C2279A6C6DAB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A5F3E387-01A8-47F8-885D-C2279A6C6DAB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A5F3E387-01A8-47F8-885D-C2279A6C6DAB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A5F3E387-01A8-47F8-885D-C2279A6C6DAB}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E539E46E-A07E-495A-B944-CE44F1CAD927}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E539E46E-A07E-495A-B944-CE44F1CAD927}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E539E46E-A07E-495A-B944-CE44F1CAD927}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E539E46E-A07E-495A-B944-CE44F1CAD927}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {F0C5F0E1-8691-4C83-81F6-452A7EF789A5}
+	EndGlobalSection
+EndGlobal

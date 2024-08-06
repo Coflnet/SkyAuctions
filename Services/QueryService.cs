@@ -61,6 +61,29 @@ public class QueryService
         return history;
     }
 
+    internal async IAsyncEnumerable<SaveAuction> GetFiltered(string itemTag, Dictionary<string, string> filters, DateTime start, DateTime end, int amount = 1000)
+    {
+        var table = scyllaService.AuctionsTable;
+        var endKey = ScyllaService.GetWeekOrDaysSinceStart(itemTag, end);
+        var startKey = ScyllaService.GetWeekOrDaysSinceStart(itemTag, start);
+        var returnCount = 0;
+        // reverse from end to start
+        foreach (var key in Enumerable.Range(startKey, endKey - startKey + 1).Reverse())
+        {
+            var baseData = await table.Where(a => a.End > start && a.End <= end && a.IsSold  && a.Tag == itemTag && a.TimeKey == key).ExecuteAsync();
+            var result = AddFilter(filters, baseData).ToList();
+            foreach (var item in result)
+            {
+                yield return item;
+                returnCount++;
+                if (returnCount >= amount)
+                {
+                    yield break;
+                }
+            }
+        }
+    }
+
     internal async Task<IEnumerable<ItemPrices.AuctionPreview>> GetRecentOverview(string itemTag, Dictionary<string, string> query)
     {
         var end = DateTime.UtcNow;
@@ -103,8 +126,8 @@ public class QueryService
     {
         var table = scyllaService.AuctionsTable;
         var start = end.AddDays(-1);
-        var monthId = ScyllaService.GetWeekOrDaysSinceStart(tag, end);
-        var baseData = await table.Where(a => a.End > start && a.End <= end && a.IsSold == true && a.Tag == tag && a.TimeKey == monthId).ExecuteAsync();
+        var timeKey = ScyllaService.GetWeekOrDaysSinceStart(tag, end);
+        var baseData = await table.Where(a => a.End > start && a.End <= end && a.IsSold == true && a.Tag == tag && a.TimeKey == timeKey).ExecuteAsync();
         var result = AddFilter(query, baseData).ToList();
         var prices = result.Select(a => a.HighestBidAmount).ToList();
         var sumary = new QueryArchive

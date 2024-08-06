@@ -21,6 +21,7 @@ using System.Security.Cryptography;
 using StackExchange.Redis;
 using Coflnet.Sky.Filter;
 using Coflnet.Sky.PlayerName.Client.Api;
+using Coflnet.Sky.Api.Client.Api;
 
 namespace Coflnet.Sky.Auctions;
 public class Startup
@@ -113,6 +114,10 @@ public class Startup
         services.AddSingleton<QueryService>();
         services.AddSingleton<FilterEngine>();
         services.AddTransient<RestoreService>();
+        services.AddSingleton<ExportService>();
+        services.AddSingleton<ProfileClient>();
+        services.AddHostedService(s=>s.GetRequiredService<ExportService>());
+        services.AddSingleton<IPricesApi>(s=> new PricesApi(Configuration["Api_BASE_URL"]));
         services.AddTransient<HypixelContext>(options =>
         {
             return new HypixelContext();
