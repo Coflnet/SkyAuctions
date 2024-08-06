@@ -33,7 +33,7 @@ public class ProfileClient
             logger.LogError($"Failed to get profile for {playerId} with response {response.Content}");
             return new();
         }
-        logger.LogInformation($"Got response {JsonConvert.SerializeObject(response.Data)}");
+        logger.LogInformation($"Got response {JsonConvert.SerializeObject(response.Data)} for {playerId}");
         var lookup = new BuyerLookup()
         {
             Name = response.Data.Displayname,
@@ -42,7 +42,7 @@ public class ProfileClient
             LastLogin = response.Data.LastLogin
         };
         var useLast = profile == "00000000000000000000000000000001";
-        if (response.Data.Stats.Skyblock.Profiles.TryGetValue(profile, out var profileData) || useLast)
+        if (response.Data.Stats != null && response.Data.Stats.Skyblock.Profiles.TryGetValue(profile, out var profileData) || useLast)
         {
             var toUseProfileId = useLast ? "latest" : profile;
             var skyBlockProfileRequest = new RestRequest($"api/profile/{playerId}/{toUseProfileId}", Method.Get);
