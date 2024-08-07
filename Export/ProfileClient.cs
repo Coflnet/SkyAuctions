@@ -27,7 +27,7 @@ public class ProfileClient
     {
         var request = new RestRequest($"api/profile/{playerId}/hypixel", Method.Get);
         var response = await profileClient.ExecuteAsync<HypixelProfile>(request);
-        if(response.Content.Length < 100)
+        if (response.Content.Length < 100)
         {
             // failed
             logger.LogError($"Failed to get profile for {playerId} with response {response.Content}");
@@ -49,11 +49,11 @@ public class ProfileClient
             var skyBlockProfileResponse = await profileClient.ExecuteAsync(skyBlockProfileRequest);
             var items = await pricesApi.ApiProfileItemsPostAsync(JsonConvert.DeserializeObject<Api.Client.Model.Member>(skyBlockProfileResponse.Content));
             logger.LogInformation($"Got items {JsonConvert.SerializeObject(items)}");
-            var uids = items.SelectMany(i => i.Value.Select(a => (a?.FlatNbt?.GetValueOrDefault("uid"),i.Key))).Where(i => i.Item1 != null);
+            var uids = items.SelectMany(i => i.Value.Select(a => (a?.FlatNbt?.GetValueOrDefault("uid"), i.Key))).Where(i => i.Item1 != null);
             lookup.ItemsInInventory = uids.ToDictionary(i => i.Item1, i => i.Key);
             return lookup;
-        } 
-        logger.LogInformation($"Profile {profile} not found for {playerId} options {string.Join(", ", response.Data.Stats.Skyblock.Profiles.Keys)}");
+        }
+        logger.LogInformation($"Profile {profile} not found for {playerId} options {string.Join(", ", (response.Data?.Stats?.Skyblock?.Profiles ?? new()).Keys)}");
         lookup.ProfileNotFound = true;
         return lookup;
     }
