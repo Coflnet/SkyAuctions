@@ -8,6 +8,7 @@ using Coflnet.Sky.Api.Client.Api;
 using Newtonsoft.Json;
 using Cassandra;
 using Microsoft.Extensions.Logging;
+using Coflnet.Sky.Core;
 
 namespace Coflnet.Sky.Auctions.Services;
 
@@ -48,7 +49,7 @@ public class ProfileClient
             var skyBlockProfileRequest = new RestRequest($"api/profile/{playerId}/{toUseProfileId}", Method.Get);
             var skyBlockProfileResponse = await profileClient.ExecuteAsync(skyBlockProfileRequest);
             var items = await pricesApi.ApiProfileItemsPostAsync(JsonConvert.DeserializeObject<Api.Client.Model.Member>(skyBlockProfileResponse.Content));
-            logger.LogInformation($"Got items {JsonConvert.SerializeObject(items)}");
+            logger.LogInformation($"Got items {JsonConvert.SerializeObject(items).Truncate(100)} for {playerId} profile {profile}");
             var uids = items.SelectMany(i => i.Value.Select(a => (a?.FlatNbt?.GetValueOrDefault("uid"), i.Key))).Where(i => i.Item1 != null);
             lookup.ItemsInInventory = uids.ToDictionary(i => i.Item1, i => i.Key);
             return lookup;
