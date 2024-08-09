@@ -22,6 +22,7 @@ using StackExchange.Redis;
 using Coflnet.Sky.Filter;
 using Coflnet.Sky.PlayerName.Client.Api;
 using Coflnet.Sky.Api.Client.Api;
+using Coflnet.Kafka;
 
 namespace Coflnet.Sky.Auctions;
 public class Startup
@@ -36,7 +37,10 @@ public class Startup
     // This method gets called by the runtime. Use this method to add services to the container.
     public void ConfigureServices(IServiceCollection services)
     {
-        services.AddControllers().AddNewtonsoftJson();
+        services.AddControllers().AddNewtonsoftJson(c=>{
+            // enum string
+            c.SerializerSettings.Converters.Add(new Newtonsoft.Json.Converters.StringEnumConverter());
+        });
         services.AddSwaggerGen(c =>
         {
             c.SwaggerDoc("v1", new OpenApiInfo { Title = "SkyAuctions", Version = "v1" });
@@ -44,7 +48,7 @@ public class Startup
             var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";
             var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
             c.IncludeXmlComments(xmlPath);
-        });
+        }).AddSwaggerGenNewtonsoftSupport();
 
         // Replace with your server version and type.
         // Use 'MariaDbServerVersion' for MariaDB.
@@ -62,6 +66,7 @@ public class Startup
         services.AddHostedService<SellsCollector>();
         services.AddJaeger(Configuration);
         services.AddTransient<BaseService>();
+        services.AddSingleton<KafkaCreator>();
         services.AddSingleton<IConnectionMultiplexer>(provider => ConnectionMultiplexer.Connect(Configuration["REDIS_HOST"]));
         services.AddSingleton<ISession>(p =>
         {

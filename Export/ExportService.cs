@@ -226,6 +226,7 @@ public class ExportService : BackgroundService
         Cancelled
     }
 
+    [Flags]
     public enum ExportFlags
     {
         None,
