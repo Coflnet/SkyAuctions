@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Cassandra.Data.Linq;
+using Coflnet.Kafka;
 using Coflnet.Sky.Core;
+using Confluent.Kafka;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
@@ -15,12 +17,15 @@ public class RestoreService
     private readonly ScyllaService scyllaService;
     private readonly ILogger<RestoreService> logger;
     private readonly HypixelContext context;
+    private readonly IProducer<string, long> deleteProducer;
 
-    public RestoreService(ScyllaService scyllaService, HypixelContext context, ILogger<RestoreService> logger)
+    public RestoreService(ScyllaService scyllaService, HypixelContext context, ILogger<RestoreService> logger, KafkaCreator kafkaCreator)
     {
         this.scyllaService = scyllaService;
         this.context = context;
         this.logger = logger;
+        deleteProducer = kafkaCreator.BuildProducer<string, long>();
+        _ = kafkaCreator.CreateTopicIfNotExist("sky-delete-auction", 1);
     }
 
     /// <summary>
@@ -69,8 +74,7 @@ public class RestoreService
                 if (auction.Tag == null && auction.AuctioneerId == null && auction.ProfileId == null && auction.HighestBidAmount == 0 && auction.ItemCreatedAt < new DateTime(2010, 1, 1))
                 {
                     // not sure where they are from but they are baically uesless
-                    context.Remove(auction);
-                    await context.SaveChangesAsync();
+                    ProduceDelete(auction);
                     return null;
                 }
                 logger.LogInformation("Auction {0} not found in scylla, inserting {full}", id, JsonConvert.SerializeObject(fromDb));
@@ -85,7 +89,7 @@ public class RestoreService
             {
                 await NewMethod(archivedAuctions, auction);
             }
-            await context.SaveChangesAsync();
+            //await context.SaveChangesAsync();
         }
         catch (Exception e)
         {
@@ -138,14 +142,16 @@ public class RestoreService
             if (archivedObj.End == compareAuction.End && archivedObj.Start == compareAuction.Start && archivedObj.ItemCreatedAt == compareAuction.ItemCreatedAt || toBeDeleted.Length != archivedVersion.Length)
                 throw new CoflnetException("no_match", $"Archived version does not match to be deleted version {JsonConvert.SerializeObject(auction)}");
         }
-
-        context.Remove(auction);
-        context.RemoveRange(auction.Enchantments);
-        if (auction.NbtData != null)
-            context.RemoveRange(auction.NbtData);
-        context.RemoveRange(auction.NBTLookup);
-        context.RemoveRange(auction.CoopMembers);
-        context.RemoveRange(auction.Bids);
+        /*
+                context.Remove(auction);
+                context.RemoveRange(auction.Enchantments);
+                if (auction.NbtData != null)
+                    context.RemoveRange(auction.NbtData);
+                context.RemoveRange(auction.NBTLookup);
+                context.RemoveRange(auction.CoopMembers);
+                context.RemoveRange(auction.Bids);
+                */
+        ProduceDelete(auction);
 
         static void AdjustForOptimizations(SaveAuction archivedObj)
         {
@@ -167,6 +173,11 @@ public class RestoreService
             archivedObj.Enchantments = archivedObj.Enchantments.OrderBy(e => e.Type).ToList();
             archivedObj.FlatenedNBT = archivedObj.FlatenedNBT.OrderBy(n => n.Key).ToDictionary(n => n.Key, n => n.Value);
         }
+    }
+
+    private void ProduceDelete(SaveAuction auction)
+    {
+        deleteProducer.Produce("sky-delete-auction", new Message<string, long> { Key = auction.Uuid, Value = auction.HighestBidAmount });
     }
 
     /// <summary>

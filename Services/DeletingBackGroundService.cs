@@ -41,16 +41,18 @@ public class DeletingBackGroundService : BackgroundService
     {
         var threeYearsAgo = DateTime.UtcNow.AddYears(-3);
         var biggestDate = new DateTime();
+        var highest = 0;
         while (biggestDate < threeYearsAgo)
         {
             using var context = new HypixelContext();
-            var batch = await context.Auctions.Take(128).ToListAsync();
+            var batch = await context.Auctions.Where(a=>a.Id > highest).OrderBy(a=>a.Id).Take(128).ToListAsync();
             biggestDate = batch.LastOrDefault()?.End ?? DateTime.UtcNow;
             logger.LogInformation("Deleting batch");
             var w1 = DeleteBatch(threeYearsAgo, batch.Take(64).ToList());
             var w2 = DeleteBatch(threeYearsAgo, batch.Skip(64).ToList());
             await Task.WhenAll(w1, w2);
-            logger.LogInformation("Deleted batch");
+            logger.LogInformation("sheduled batch for delete {id}", highest);
+            highest += batch.Max(b=>b.Id) + 128;
         }
     }
 
