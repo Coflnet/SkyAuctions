@@ -18,7 +18,7 @@ using static Coflnet.Sky.Core.Enchantment;
 namespace Coflnet.Sky.Auctions;
 public class ScyllaService
 {
-    public Cassandra.ISession Session { get; set; }
+    public ISession Session { get; set; }
 
     public const int MaxRandomItemUid = 9999;
     private Table<ScyllaAuction> _auctionsTable;
@@ -43,7 +43,7 @@ public class ScyllaService
     public Table<QueryArchive> QueryArchiveTable { get; set; }
     private Table<CassandraBid> BidsTable { get; set; }
     private ILogger<ScyllaService> Logger { get; set; }
-    public ScyllaService(Cassandra.ISession session, ILogger<ScyllaService> logger)
+    public ScyllaService(ISession session, ILogger<ScyllaService> logger)
     {
         Session = session;
         Logger = logger;

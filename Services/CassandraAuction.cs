@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Cassandra.Mapping.Attributes;
 using Coflnet.Sky.Core;
 using Newtonsoft.Json;
 
@@ -9,9 +10,9 @@ namespace Coflnet.Sky.Auctions;
 /// </summary>
 public class CassandraAuction : ICassandraItem
 {
-    [Cassandra.Mapping.Attributes.SecondaryIndex()]
+    [SecondaryIndex()]
     public Guid Uuid { get; set; }
-    [Cassandra.Mapping.Attributes.PartitionKey]
+    [PartitionKey]
     public string Tag { get; set; }
     public string ItemName { get; set; }
     public string ItemLore { get; set; }
@@ -22,7 +23,7 @@ public class CassandraAuction : ICassandraItem
     public long HighestBidAmount { get; set; }
     public bool Bin { get; set; }
     public bool IsSold { get; set; }
-    [Cassandra.Mapping.Attributes.ClusteringKey]
+    [ClusteringKey]
     public DateTime End { get; set; }
     public DateTime Start { get; set; }
     public DateTime ItemCreatedAt { get; set; }
@@ -54,7 +55,7 @@ public class CassandraAuction : ICassandraItem
     [JsonIgnore]
     [System.Text.Json.Serialization.JsonIgnore]
     public byte[] SerialisedBids { get; set; }
-    [Cassandra.Mapping.Attributes.Ignore]
+    [Ignore]
     [JsonProperty("bids")]
     public List<CassandraBid> Bids
     {

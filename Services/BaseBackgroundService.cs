@@ -119,7 +119,7 @@ public class SellsCollector : BackgroundService
                 {
                     await NewMethod(i, tag, maxEnd, start);
                 }
-                catch (Cassandra.WriteTimeoutException e)
+                catch (WriteTimeoutException e)
                 {
                     logger.LogError(e, $"Timeout Error while deleting {i} {tag} {maxEnd}");
                     for (int m = 0; m < 60; m++)
@@ -129,7 +129,7 @@ public class SellsCollector : BackgroundService
                         {
                             await NewMethod(i, tag, adjustedEnd, adjustedEnd - TimeSpan.FromMinutes(5));
                         }
-                        catch (Cassandra.WriteTimeoutException ei)
+                        catch (WriteTimeoutException ei)
                         {
                             logger.LogError(ei, $"Timeout Error while deleting minutes {i} {tag} {adjustedEnd}");
                         }
@@ -235,7 +235,7 @@ public class SellsCollector : BackgroundService
                             consumeCount.Inc(groupBatch.Count());
                             batchInsertCount.Inc();
                         }
-                        catch (Cassandra.WriteTimeoutException e)
+                        catch (WriteTimeoutException e)
                         {
                             logger.LogError(e, $"Timeout Error while inserting {groupBatch.First().Tag}");
                             throw;
