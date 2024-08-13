@@ -37,7 +37,8 @@ public class Startup
     // This method gets called by the runtime. Use this method to add services to the container.
     public void ConfigureServices(IServiceCollection services)
     {
-        services.AddControllers().AddNewtonsoftJson(c=>{
+        services.AddControllers().AddNewtonsoftJson(c =>
+        {
             // enum string
             c.SerializerSettings.Converters.Add(new Newtonsoft.Json.Converters.StringEnumConverter());
         });
@@ -121,8 +122,8 @@ public class Startup
         services.AddTransient<RestoreService>();
         services.AddSingleton<ExportService>();
         services.AddSingleton<ProfileClient>();
-        services.AddHostedService(s=>s.GetRequiredService<ExportService>());
-        services.AddSingleton<IPricesApi>(s=> new PricesApi(Configuration["Api_BASE_URL"]));
+        services.AddHostedService(s => s.GetRequiredService<ExportService>());
+        services.AddSingleton<IPricesApi>(s => new PricesApi(Configuration["Api_BASE_URL"]));
         services.AddTransient<HypixelContext>(options =>
         {
             return new HypixelContext();
@@ -153,6 +154,10 @@ public class Startup
         {
             app.UseDeveloperExceptionPage();
         }
+        app.UseExceptionHandler(errorApp =>
+        {
+            ErrorHandler.Add(errorApp, "auctions");
+        });
         app.UseSwagger();
         app.UseSwaggerUI(c =>
         {
