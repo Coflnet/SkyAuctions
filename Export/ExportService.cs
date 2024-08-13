@@ -185,7 +185,23 @@ public class ExportService : BackgroundService
         }
         await exportRequests.Insert(request).ExecuteAsync();
         pendingRequests.Enqueue(request);
+
+        await SendExportQueueNoteToDiscord(request);
         return request;
+    }
+
+    private async Task SendExportQueueNoteToDiscord(ExportRequest request)
+    {
+        var client = new RestClient();
+        var webhookRequest = new RestRequest(request.DiscordWebhookUrl, Method.Post);
+        var title = $"Export request for {request.ItemTag} queued";
+        var payloadjson = JsonConvert.SerializeObject(new { content = title });
+        webhookRequest.AddParameter("payload_json", payloadjson, ParameterType.RequestBody);
+        var response = await client.ExecuteAsync(webhookRequest);
+        if (!response.IsSuccessful)
+        {
+            logger.LogError($"Failed to send webhook for {request.ItemTag} export request");
+        }
     }
 
     public async Task CancelExport(string email)
