@@ -181,6 +181,7 @@ public class ExportService : BackgroundService
         var waitingCount = pendingRequests.Where(r => r.ByEmail == request.ByEmail).Count();
         if (waitingCount >= 4)
         {
+            logger.LogError($"Too many requests from {request.ByEmail} already in progress, please wait for one of them to finish");
             throw new CoflnetException("to_many_requests", "Too many requests from you already in progress, please wait for one of them to finish");
         }
         await exportRequests.Insert(request).ExecuteAsync();
