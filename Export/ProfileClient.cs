@@ -26,6 +26,20 @@ public class ProfileClient
 
     public async Task<BuyerLookup> GetLookup(string playerId, string profile)
     {
+        try
+        {
+            return await TryGetLookup(playerId, profile);
+        }
+        catch (System.Exception e)
+        {
+            logger.LogError(e, $"Failed to get profile for {playerId}");
+            await Task.Delay(1000);
+            return await TryGetLookup(playerId, profile);
+        }
+    }
+
+    private async Task<BuyerLookup> TryGetLookup(string playerId, string profile)
+    {
         var request = new RestRequest($"api/profile/{playerId}/hypixel", Method.Get);
         var response = await profileClient.ExecuteAsync<HypixelProfile>(request);
         if (response.Content.Length < 100)
