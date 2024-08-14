@@ -64,7 +64,7 @@ public class ProfileClient
             var skyBlockProfileResponse = await profileClient.ExecuteAsync(skyBlockProfileRequest);
             var items = await pricesApi.ApiProfileItemsPostAsync(JsonConvert.DeserializeObject<Api.Client.Model.Member>(skyBlockProfileResponse.Content));
             logger.LogInformation($"Got items {JsonConvert.SerializeObject(items).Truncate(100)} for {playerId} profile {profile}");
-            var uids = items.SelectMany(i => i.Value.Select(a => (a?.FlatNbt?.GetValueOrDefault("uid"), i.Key))).Where(i => i.Item1 != null);
+            var uids = items.SelectMany(i => i.Value.Select(a => (a?.FlatNbt?.GetValueOrDefault("uid", a.Tag), i.Key))).Where(i => i.Item1 != null);
             lookup.ItemsInInventory = uids.ToDictionary(i => i.Item1, i => i.Key);
             return lookup;
         }
