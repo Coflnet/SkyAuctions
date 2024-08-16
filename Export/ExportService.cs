@@ -121,6 +121,7 @@ public class ExportService : BackgroundService
         if (request.Flags.HasFlag(ExportFlags.IncludeSocial))
         {
             var socialAvailable = buyerLookup.Values.SelectMany(b => b.SocialLinks.Keys).GroupBy(s => s).Select(g => g.Key).ToList();
+            Console.WriteLine($"Social available {string.Join(", ", socialAvailable)}");
             foreach (var social in socialAvailable)
             {
                 columnMapping[$"buyerSocial_{social}"] = a => buyerLookup.GetValueOrDefault(GetBuyerProfile(a))?.SocialLinks.GetValueOrDefault(social, "none");
