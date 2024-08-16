@@ -112,13 +112,20 @@ public class ExportService : BackgroundService
             {"buyerUuid", a=> GetBuyerProfile(a).Item1},
             {"buyerProfile", a=> GetBuyerProfile(a).Item2},
             {"itemUid", a=>a.FlatenedNBT.GetValueOrDefault("uid")?.ToString()},
-            {"buyerDiscordTag", a=>buyerLookup.GetValueOrDefault(GetBuyerProfile(a))?.DiscordId},
             {"inInventory", a => buyerLookup.GetValueOrDefault(GetBuyerProfile(a))?.ItemsInInventory?.GetValueOrDefault(a.FlatenedNBT.GetValueOrDefault("uid", a.Tag), "no")?.ToString() ?? "failed"},
             {"itemsFoundInInventory", a => buyerLookup.GetValueOrDefault(GetBuyerProfile(a))?.ItemsInInventory.Count.ToString()},
             {"profileFound", a => buyerLookup.GetValueOrDefault(GetBuyerProfile(a))?.ProfileNotFound.ToString()},
             {"buyerName", a => buyerLookup.GetValueOrDefault(GetBuyerProfile(a))?.Name},
             {"buyerLastLogin", a => buyerLookup.GetValueOrDefault(GetBuyerProfile(a))?.LastLogin.ToString()},
              };
+        if (request.Flags.HasFlag(ExportFlags.IncludeSocial))
+        {
+            var socialAvailable = buyerLookup.Values.SelectMany(b => b.SocialLinks.Keys).GroupBy(s => s).Select(g => g.Key).ToList();
+            foreach (var social in socialAvailable)
+            {
+                columnMapping[$"buyerSocial_{social}"] = a => buyerLookup.GetValueOrDefault(GetBuyerProfile(a))?.SocialLinks.GetValueOrDefault(social, "none");
+            }
+        }
         request.Columns = columnMapping.Keys.ToList();
         foreach (var column in request.Columns)
         {

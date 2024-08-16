@@ -49,11 +49,13 @@ public class ProfileClient
             return new();
         }
         logger.LogInformation($"Got response {JsonConvert.SerializeObject(response.Data)} for {playerId}");
+        var social = response.Data.SocialMedia?.Links ?? new();
+        social["TWITTER"] = response.Data.SocialMedia?.Twitter;
         var lookup = new BuyerLookup()
         {
             Name = response.Data.Displayname,
             Uuid = playerId,
-            DiscordId = response.Data.SocialMedia?.Links?.DISCORD,
+            SocialLinks = social,
             LastLogin = response.Data.LastLogin
         };
         var useLast = profile == "00000000000000000000000000000001";
@@ -83,13 +85,10 @@ public class ProfileClient
 
     public class SocialMedia
     {
-        public Links Links { get; set; }
+        public string Twitter { get; set; }
+        public Dictionary<string,string> Links { get; set; }
     }
 
-    public class Links
-    {
-        public string DISCORD { get; set; }
-    }
     public class HypixelStats
     {
         public Skyblock Skyblock { get; set; }
