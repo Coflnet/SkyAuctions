@@ -85,7 +85,7 @@ public class ExportService : BackgroundService
 
     private async Task RunExport(ExportRequest request)
     {
-        logger.LogInformation($"Exporting {request.ItemTag} for {request.ByEmail}");
+        logger.LogInformation($"Exporting {request.ItemTag} for {request.ByEmail} {JsonConvert.SerializeObject(request)}");
         var end = GetTimeKey(request, "EndBefore");
         var start = GetTimeKey(request, "EndAfter");
 
