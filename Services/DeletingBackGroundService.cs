@@ -51,6 +51,7 @@ public class DeletingBackGroundService : BackgroundService
             await Task.WhenAll(w1, w2);
             logger.LogInformation("sheduled batch for delete {id}", highest);
             highest = batch.Max(b=>b.Id);
+            await Task.Delay(5000);
         }
     }
 
