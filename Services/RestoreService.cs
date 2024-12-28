@@ -190,7 +190,7 @@ public class RestoreService
 
     private void ProduceDelete(SaveAuction auction)
     {
-        deleteProducer.Produce("sky-delete-auction", new Message<string, DeleteRequest> { 
+        deleteProducer.Produce("sky-delete-auctions", new Message<string, DeleteRequest> { 
             Key = auction.Uuid, Value = new() { HighestBidAmount = auction.HighestBidAmount, Uuid = auction.Uuid, Id = auction.Id } });
     }
 

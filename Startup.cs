@@ -68,6 +68,7 @@ public class Startup
         services.AddJaeger(Configuration);
         services.AddTransient<BaseService>();
         services.AddSingleton<KafkaCreator>();
+        services.AddSingleton<Coflnet.Sky.Kafka.KafkaCreator>();
         services.AddSingleton<IConnectionMultiplexer>(provider => ConnectionMultiplexer.Connect(Configuration["REDIS_HOST"]));
         services.AddSingleton<ISession>(p =>
         {

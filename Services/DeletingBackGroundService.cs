@@ -27,8 +27,6 @@ public class DeletingBackGroundService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        logger.LogInformation("Deleting Background Service is disabled.");
-        return;
         while (!stoppingToken.IsCancellationRequested)
         {
             await Delete();
