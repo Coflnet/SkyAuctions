@@ -52,7 +52,7 @@ public class DeletingBackGroundService : BackgroundService
             var w2 = DeleteBatch(threeYearsAgo, batch.Skip(64).ToList());
             await Task.WhenAll(w1, w2);
             logger.LogInformation("sheduled batch for delete {id}", highest);
-            highest += batch.Max(b=>b.Id);
+            highest = batch.Max(b=>b.Id);
         }
     }
 

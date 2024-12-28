@@ -5,7 +5,9 @@ using System.Threading.Tasks;
 using Cassandra.Data.Linq;
 using Coflnet.Kafka;
 using Coflnet.Sky.Core;
+using Coflnet.Sky.Core.Migrations;
 using Confluent.Kafka;
+using MessagePack;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
@@ -17,15 +19,26 @@ public class RestoreService
     private readonly ScyllaService scyllaService;
     private readonly ILogger<RestoreService> logger;
     private readonly HypixelContext context;
-    private readonly IProducer<string, long> deleteProducer;
+    private readonly IProducer<string, DeleteRequest> deleteProducer;
 
-    public RestoreService(ScyllaService scyllaService, HypixelContext context, ILogger<RestoreService> logger, KafkaCreator kafkaCreator)
+    public RestoreService(ScyllaService scyllaService, HypixelContext context, ILogger<RestoreService> logger, Kafka.KafkaCreator kafkaCreator)
     {
         this.scyllaService = scyllaService;
         this.context = context;
         this.logger = logger;
-        deleteProducer = kafkaCreator.BuildProducer<string, long>();
-        _ = kafkaCreator.CreateTopicIfNotExist("sky-delete-auction", 1);
+        deleteProducer = kafkaCreator.BuildProducer<string, DeleteRequest>();
+        _ = kafkaCreator.CreateTopicIfNotExist("sky-delete-auctions", 1);
+    }
+
+    [MessagePackObject]
+    public class DeleteRequest
+    {
+        [Key(0)]
+        public string Uuid { get; set; }
+        [Key(1)]
+        public long HighestBidAmount { get; set; }
+        [Key(2)]
+        public int Id { get; set; }
     }
 
     /// <summary>
@@ -177,7 +190,8 @@ public class RestoreService
 
     private void ProduceDelete(SaveAuction auction)
     {
-        deleteProducer.Produce("sky-delete-auction", new Message<string, long> { Key = auction.Uuid, Value = auction.HighestBidAmount });
+        deleteProducer.Produce("sky-delete-auction", new Message<string, DeleteRequest> { 
+            Key = auction.Uuid, Value = new() { HighestBidAmount = auction.HighestBidAmount, Uuid = auction.Uuid, Id = auction.Id } });
     }
 
     /// <summary>
