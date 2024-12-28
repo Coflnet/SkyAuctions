@@ -37,6 +37,11 @@ public class DeletingBackGroundService : BackgroundService
 
     private async Task Delete()
     {
+        var backoff = new DateTime(2024, 12, 29) - DateTime.UtcNow;
+        if(backoff.TotalMilliseconds > 0)
+        {
+            await Task.Delay(backoff);
+        }
         var threeYearsAgo = DateTime.UtcNow.AddYears(-3);
         var biggestDate = new DateTime();
         var highest = 0;
