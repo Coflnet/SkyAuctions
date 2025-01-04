@@ -64,10 +64,13 @@ public class ProfileClient
             var toUseProfileId = useLast ? "latest" : profile;
             var skyBlockProfileRequest = new RestRequest($"api/profile/{playerId}/{toUseProfileId}", Method.Get);
             var skyBlockProfileResponse = await profileClient.ExecuteAsync(skyBlockProfileRequest);
-            var items = await pricesApi.ApiProfileItemsPostAsync(JsonConvert.DeserializeObject<Api.Client.Model.Member>(skyBlockProfileResponse.Content));
-            logger.LogInformation($"Got items {JsonConvert.SerializeObject(items).Truncate(100)} for {playerId} profile {profile}");
+            var deserialized = JsonConvert.DeserializeObject<Api.Client.Model.Member>(skyBlockProfileResponse.Content);
+            var items = await pricesApi.ApiProfileItemsPostAsync(deserialized);
+            if (items == null)
+                logger.LogInformation("Posted {0} to prices api", JsonConvert.SerializeObject(deserialized));
+            logger.LogInformation($"Got items {JsonConvert.SerializeObject(items).Truncate(100)} for {playerId} profile {toUseProfileId}");
             var uids = items.SelectMany(i => i.Value.Select(a => (a?.FlatNbt?.GetValueOrDefault("uid", a.Tag), i.Key))).Where(i => i.Item1 != null);
-            lookup.ItemsInInventory = uids.GroupBy(i=>i.Item1).Select(i=>i.First()).ToDictionary(i => i.Item1, i => i.Key);
+            lookup.ItemsInInventory = uids.GroupBy(i => i.Item1).Select(i => i.First()).ToDictionary(i => i.Item1, i => i.Key);
             return lookup;
         }
         logger.LogInformation($"Profile {profile} not found for {playerId} options {string.Join(", ", (response.Data?.Stats?.Skyblock?.Profiles ?? new()).Keys)}");
@@ -86,7 +89,7 @@ public class ProfileClient
     public class SocialMedia
     {
         public string Twitter { get; set; }
-        public Dictionary<string,string> Links { get; set; }
+        public Dictionary<string, string> Links { get; set; }
     }
 
     public class HypixelStats
