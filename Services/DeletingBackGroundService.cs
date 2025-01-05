@@ -37,7 +37,7 @@ public class DeletingBackGroundService : BackgroundService
 
     private async Task Delete()
     {
-        var backoff = new DateTime(2024, 12, 29) - DateTime.UtcNow;
+        var backoff = new DateTime(20245, 1, 6) - DateTime.UtcNow;
         if(backoff.TotalMilliseconds > 0)
         {
             await Task.Delay(backoff);
@@ -56,6 +56,11 @@ public class DeletingBackGroundService : BackgroundService
             await Task.WhenAll(w1, w2);
             logger.LogInformation("sheduled batch for delete {id}", highest);
             highest = batch.Max(b=>b.Id);
+            if(DateTime.UtcNow.DayOfWeek == DayOfWeek.Saturday)
+            {
+                // higher load, wait longer
+                await Task.Delay(30_000);
+            }
             await Task.Delay(30_000);
         }
     }
