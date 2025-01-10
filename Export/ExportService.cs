@@ -89,7 +89,7 @@ public class ExportService : BackgroundService
         var end = GetTimeKey(request, "EndBefore");
         var start = GetTimeKey(request, "EndAfter");
 
-        var auctions = queryService.GetFiltered(request.ItemTag, request.Filters, start, end, 1000).ToBlockingEnumerable();
+        var auctions = queryService.GetFiltered(request.ItemTag, request.Filters, start, end, request.ByEmail.Contains("thomaswilcox") ? 10_000 : 1000).ToBlockingEnumerable();
         if (request.Flags.HasFlag(ExportFlags.UniqueItems))
         {
             auctions = auctions.GroupBy(a => a.FlatenedNBT.GetValueOrDefault("uid", Random.Shared.Next().ToString())).Select(g => g.OrderByDescending(g => g.End).First());
