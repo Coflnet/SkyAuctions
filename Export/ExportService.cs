@@ -98,11 +98,12 @@ public class ExportService : BackgroundService
         var buyerUuids = auctions.Select(a => a.Bids.OrderByDescending(b => b.Amount).FirstOrDefault()).Where(b => b != null).Select(b => (b.Bidder, b.ProfileId)).Distinct().ToList();
         var buyerLookup = new Dictionary<(string, string), BuyerLookup>();
         logger.LogInformation($"Found {buyerUuids.Count} unique buyers, loading their details");
-        foreach (var item in buyerUuids)
-        {
-            var lookup = await profileClient.GetLookup(item.Bidder, item.ProfileId);
-            buyerLookup[item] = lookup;
-        }
+        if (request.Flags.HasFlag(ExportFlags.InventoryCheck) || request.Flags.HasFlag(ExportFlags.IncludeSocial))
+            foreach (var item in buyerUuids)
+            {
+                var lookup = await profileClient.GetLookup(item.Bidder, item.ProfileId);
+                buyerLookup[item] = lookup;
+            }
         var columnMapping = new Dictionary<string, Func<SaveAuction, string>>() { {
             "uuid", a => a.Uuid.ToString() },
             {"itemName", a=>a.ItemName},
