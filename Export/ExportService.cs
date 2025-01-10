@@ -89,7 +89,7 @@ public class ExportService : BackgroundService
         var end = GetTimeKey(request, "EndBefore");
         var start = GetTimeKey(request, "EndAfter");
 
-        var auctions = queryService.GetFiltered(request.ItemTag, request.Filters, start, end, request.ByEmail.Contains("thomaswilcox") ? 10_000 : 1000).ToBlockingEnumerable();
+        var auctions = queryService.GetFiltered(request.ItemTag, request.Filters, start, end, request.ByEmail.Contains("thomaswilcox") ? 20_000 : 1000).ToBlockingEnumerable();
         if (request.Flags.HasFlag(ExportFlags.UniqueItems))
         {
             auctions = auctions.GroupBy(a => a.FlatenedNBT.GetValueOrDefault("uid", Random.Shared.Next().ToString())).Select(g => g.OrderByDescending(g => g.End).First());
@@ -127,7 +127,10 @@ public class ExportService : BackgroundService
                 columnMapping[$"buyerSocial_{social}"] = a => buyerLookup.GetValueOrDefault(GetBuyerProfile(a))?.SocialLinks.GetValueOrDefault(social, "none");
             }
         }
-        request.Columns = columnMapping.Keys.ToList();
+        if (request.Columns == null || request.Columns.Count < 2)
+        {
+            request.Columns = columnMapping.Keys.ToList();
+        }
         foreach (var column in request.Columns)
         {
             if (!columnMapping.ContainsKey(column))
