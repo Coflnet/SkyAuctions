@@ -26,9 +26,6 @@ public class ExportController : ControllerBase
     public async Task RequestAll()
     {
         var toExport = new List<string>(){
-"PET_SKIN_SHEEP_BLACK",
-            "DYE_AURORA", "GLOWING_GRAPE_FLUX",
-"GLISTENING_MELON_FLUX",
 "GOLDEN_APPLE_FLUX",
 "FROG_BARN_SKIN",
 "PET_SKIN_CHICKEN_TURKEY",
@@ -108,11 +105,12 @@ public class ExportController : ControllerBase
 "PET_SKIN_SQUID_GLOW",
 "PET_SKIN_WOLF"
         };
+        var i = 0;
         foreach (var item in toExport)
         {
             await exportService.RequestExport(new ExportService.ExportRequest()
             {
-                ByEmail = "thomaswilcox",
+                ByEmail = "thomaswilcox" + (i++),
                 ItemTag = item,
                 Filters = new Dictionary<string, string>(){
                     {"EndBefore", DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString()},
