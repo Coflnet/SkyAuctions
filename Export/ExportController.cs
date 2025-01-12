@@ -26,6 +26,10 @@ public class ExportController : ControllerBase
     public async Task RequestAll()
     {
         var toExport = new List<string>(){
+            "PET_SKIN_SHEEP_BLACK",
+            "DYE_AURORA",
+"GLOWING_GRAPE_FLUX",
+"GLISTENING_MELON_FLUX",
 "GOLDEN_APPLE_FLUX",
 "FROG_BARN_SKIN",
 "PET_SKIN_CHICKEN_TURKEY",
@@ -116,7 +120,7 @@ public class ExportController : ControllerBase
                     {"EndBefore", DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString()},
                     {"EndAfter", new DateTimeOffset(new DateTime(2019,7,20)).ToUnixTimeSeconds().ToString() } },
                 Columns = ["uuid", "endedAt", "itemUid", "highestBidAmount"],
-                DiscordWebhookUrl = "https://discord.com/api/webhooks/1327326866713083986/eAKW-c-aDGt2IDqpjI--snFSzxaYgEa6_va5D1YG0oWQ11r04FYyBghtMftFzn1PFhnv"
+                DiscordWebhookUrl = "..."
             });
         }
     }
