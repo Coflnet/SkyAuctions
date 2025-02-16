@@ -37,11 +37,6 @@ public class DeletingBackGroundService : BackgroundService
 
     private async Task Delete()
     {
-        var backoff = new DateTime(2025, 1, 11) - DateTime.UtcNow;
-        if(backoff.TotalMilliseconds > 0)
-        {
-            await Task.Delay(backoff);
-        }
         var threeYearsAgo = DateTime.UtcNow.AddYears(-3);
         var biggestDate = new DateTime();
         var highest = 0;
@@ -59,9 +54,9 @@ public class DeletingBackGroundService : BackgroundService
             if(DateTime.UtcNow.DayOfWeek == DayOfWeek.Saturday)
             {
                 // higher load, wait longer
-                await Task.Delay(30_000);
+                await Task.Delay(20_000);
             }
-            await Task.Delay(30_000);
+            await Task.Delay(15_000);
         }
     }
 
