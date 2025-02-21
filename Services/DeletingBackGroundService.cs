@@ -42,16 +42,17 @@ public class DeletingBackGroundService : BackgroundService
         var highest = 0;
         while (biggestDate < threeYearsAgo)
         {
-            using var context = new HypixelContext();
-            var batch = await context.Auctions.Where(a=>a.Id > highest).OrderBy(a=>a.Id).Take(128).ToListAsync();
+            List<SaveAuction> batch = new();
+            using (var context = new HypixelContext())
+                batch = await context.Auctions.Where(a => a.Id > highest).OrderBy(a => a.Id).Take(128).ToListAsync();
             biggestDate = batch.LastOrDefault()?.End ?? DateTime.UtcNow;
             logger.LogInformation("Deleting batch");
             var w1 = DeleteBatch(threeYearsAgo, batch.Take(64).ToList());
             var w2 = DeleteBatch(threeYearsAgo, batch.Skip(64).ToList());
             await Task.WhenAll(w1, w2);
             logger.LogInformation("sheduled batch for delete {id}", highest);
-            highest = batch.Max(b=>b.Id);
-            if(DateTime.UtcNow.DayOfWeek == DayOfWeek.Saturday)
+            highest = batch.Max(b => b.Id);
+            if (DateTime.UtcNow.DayOfWeek == DayOfWeek.Saturday)
             {
                 // higher load, wait longer
                 await Task.Delay(20_000);
@@ -62,7 +63,7 @@ public class DeletingBackGroundService : BackgroundService
 
     private async Task DeleteBatch(DateTime threeYearsAgo, List<SaveAuction> batch)
     {
-        var scope = scopeFactory.CreateScope();
+        using var scope = scopeFactory.CreateScope();
         var service = scope.ServiceProvider.GetRequiredService<RestoreService>();
         foreach (var item in batch.OrderBy(i => i.End).Batch(32))
         {
