@@ -353,9 +353,4 @@ public class SellsCollector : BackgroundService
         offsetGauge.Set(toStore);
         await CacheService.Instance.SaveInRedis(RedisProgressKey, toStore);
     }
-
-    private BaseService GetService()
-    {
-        return scopeFactory.CreateScope().ServiceProvider.GetRequiredService<BaseService>();
-    }
 }
