@@ -123,10 +123,11 @@ public class Startup
         services.AddTransient<RestoreService>();
         services.AddSingleton<ExportService>();
         services.AddSingleton<ProfileClient>();
-        services.AddSingleton<NBT>();
+        services.AddSingleton<INBT,NBT>();
         services.AddSingleton<ItemDetails>();
         services.AddHttpClient();
         services.AddHostedService(s => s.GetRequiredService<ExportService>());
+        services.AddSingleton<Items.Client.Api.IItemsApi>(s => new Items.Client.Api.ItemsApi(Configuration["ITEMS_BASE_URL"]));
         services.AddSingleton<IPricesApi>(s => new PricesApi(Configuration["Api_BASE_URL"]));
         services.AddTransient<HypixelContext>(options =>
         {
