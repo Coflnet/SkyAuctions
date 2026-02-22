@@ -123,6 +123,9 @@ public class Startup
         services.AddTransient<RestoreService>();
         services.AddSingleton<ExportService>();
         services.AddSingleton<ProfileClient>();
+        services.AddSingleton<NBT>();
+        services.AddSingleton<ItemDetails>();
+        services.AddHttpClient();
         services.AddHostedService(s => s.GetRequiredService<ExportService>());
         services.AddSingleton<IPricesApi>(s => new PricesApi(Configuration["Api_BASE_URL"]));
         services.AddTransient<HypixelContext>(options =>

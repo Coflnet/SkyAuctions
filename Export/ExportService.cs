@@ -73,6 +73,14 @@ public class ExportService : BackgroundService
                     request.Status = ExportStatus.Failed;
                     exportRequests.Insert(request).Execute();
                     pendingRequests.Enqueue(request);
+                    try
+                    {
+                        await SendExportFailureToDiscord(request, e);
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogError(ex, "Failed to send export failure webhook");
+                    }
                     await Task.Delay(10000, stoppingToken);
                     continue;
                 }
@@ -214,6 +222,42 @@ public class ExportService : BackgroundService
         if (!response.IsSuccessful)
         {
             logger.LogError($"Failed to send webhook for {request.ItemTag} export request");
+        }
+    }
+
+    private async Task SendExportFailureToDiscord(ExportRequest request, Exception e)
+    {
+        if (string.IsNullOrEmpty(request?.DiscordWebhookUrl))
+            return;
+
+        try
+        {
+            var client = new RestClient();
+            var webhookRequest = new RestRequest(request.DiscordWebhookUrl, Method.Post);
+            var title = $"Export failed for {request.ItemTag}";
+            var content = new StringBuilder();
+            content.AppendLine(title);
+            content.AppendLine($"User: {request.ByEmail}");
+            content.AppendLine($"Status: {request.Status}");
+            content.AppendLine($"Error: {e.Message}");
+            if (!string.IsNullOrEmpty(e.StackTrace))
+            {
+                var firstLine = e.StackTrace.Split('\n').FirstOrDefault()?.Trim();
+                if (!string.IsNullOrEmpty(firstLine))
+                    content.AppendLine($"Trace: {firstLine}");
+            }
+
+            var payloadjson = JsonConvert.SerializeObject(new { content = content.ToString() });
+            webhookRequest.AddParameter("payload_json", payloadjson, ParameterType.RequestBody);
+            var response = await client.ExecuteAsync(webhookRequest);
+            if (!response.IsSuccessful)
+            {
+                logger.LogError($"Failed to send failure webhook for {request.ItemTag}: {response.StatusCode} {response.ErrorMessage}");
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Exception while sending failure webhook");
         }
     }
 

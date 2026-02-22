@@ -14,7 +14,7 @@ public class ScyllaServiceTest
     public async Task InsertAuctionTag()
     {
         var mockSession = new Mock<ISession>();
-        var service = new ScyllaService(mockSession.Object, NullLogger<ScyllaService>.Instance);
+        var service = new ScyllaService(mockSession.Object, NullLogger<ScyllaService>.Instance, null);
         await service.Create();
         await service.InsertAuctionsOfTag(new SaveAuction[]{
             new(){

@@ -22,6 +22,7 @@ public class ScyllaService
 
     public const int MaxRandomItemUid = 9999;
     private Table<ScyllaAuction> _auctionsTable;
+    private NBT nbt;
     public Table<ScyllaAuction> AuctionsTable
     {
         get
@@ -43,10 +44,11 @@ public class ScyllaService
     public Table<QueryArchive> QueryArchiveTable { get; set; }
     private Table<CassandraBid> BidsTable { get; set; }
     private ILogger<ScyllaService> Logger { get; set; }
-    public ScyllaService(ISession session, ILogger<ScyllaService> logger)
+    public ScyllaService(ISession session, ILogger<ScyllaService> logger, NBT nbt)
     {
         Session = session;
         Logger = logger;
+        this.nbt = nbt;
     }
 
     public async Task Create()
@@ -497,7 +499,7 @@ public class ScyllaService
         var batch = await AuctionsTable.Where(a => a.Tag == itemTag && (a.TimeKey == currentMonth || a.TimeKey == previousMonth)
                     && a.End > DateTime.UtcNow - TimeSpan.FromDays(days) && a.End < DateTime.UtcNow && a.IsSold).ExecuteAsync();
 
-        var result = new FilterEngine().Filter(batch.Select(CassandraToOld), dictionary).ToList();
+        var result = new FilterEngine(nbt).Filter(batch.Select(CassandraToOld), dictionary).ToList();
         if (result.Count == 0)
             return new PriceSumary();
         if (result.GroupBy(a => a.Uuid).Any(g => g.Count() > 1))
