@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using Cassandra;
 using Cassandra.Data.Linq;
 using Coflnet.Sky.Auctions.Models;
+using Coflnet.Sky.Auctions.Services;
 using Coflnet.Sky.Core;
 using Coflnet.Sky.Filter;
 using Coflnet.Sky.PlayerName.Client.Api;
@@ -18,13 +19,20 @@ public class QueryService
     private readonly ILogger<QueryService> logger;
     private readonly FilterEngine filterService;
     private readonly IPlayerNameApi playerNameApi;
+    private readonly S3AuctionStorage? s3Storage;
 
-    public QueryService(ScyllaService scyllaService, ILogger<QueryService> logger, FilterEngine filterService, IPlayerNameApi playerNameApi)
+    /// <summary>
+    /// Number of months to keep in ScyllaDB before falling back to S3
+    /// </summary>
+    private const int MonthsInScylla = 3;
+
+    public QueryService(ScyllaService scyllaService, ILogger<QueryService> logger, FilterEngine filterService, IPlayerNameApi playerNameApi, S3AuctionStorage? s3Storage = null)
     {
         this.scyllaService = scyllaService;
         this.logger = logger;
         this.filterService = filterService;
         this.playerNameApi = playerNameApi;
+        this.s3Storage = s3Storage;
     }
 
     public async Task<IEnumerable<QueryArchive>> GetPriceSumary(string itemTag, Dictionary<string, string> query)
@@ -67,10 +75,31 @@ public class QueryService
         var endKey = ScyllaService.GetWeekOrDaysSinceStart(itemTag, end);
         var startKey = ScyllaService.GetWeekOrDaysSinceStart(itemTag, start);
         var returnCount = 0;
+        var scyllaCutoff = DateTime.UtcNow.AddMonths(-MonthsInScylla);
+
         // reverse from end to start
         foreach (var key in Enumerable.Range(startKey, endKey - startKey + 1).Reverse())
         {
-            var baseData = await table.Where(a => a.End > start && a.End <= end && a.IsSold  && a.Tag == itemTag && a.TimeKey == key).ExecuteAsync();
+            // Determine if this time range is in ScyllaDB or S3
+            var keyDate = GetDateFromTimeKey(itemTag, key);
+
+            IEnumerable<CassandraAuction> baseData;
+            if (keyDate >= scyllaCutoff)
+            {
+                // Data is in ScyllaDB
+                baseData = await table.Where(a => a.End > start && a.End <= end && a.IsSold && a.Tag == itemTag && a.TimeKey == key).ExecuteAsync();
+            }
+            else if (s3Storage != null)
+            {
+                // Data should be in S3
+                baseData = await GetAuctionsFromS3(itemTag, start, end, keyDate);
+            }
+            else
+            {
+                // No S3 storage configured, try ScyllaDB anyway
+                baseData = await table.Where(a => a.End > start && a.End <= end && a.IsSold && a.Tag == itemTag && a.TimeKey == key).ExecuteAsync();
+            }
+
             var result = AddFilter(filters, baseData).ToList();
             foreach (var item in result)
             {
@@ -81,6 +110,44 @@ public class QueryService
                     yield break;
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// Gets the approximate date for a time key
+    /// </summary>
+    private static DateTime GetDateFromTimeKey(string tag, int timeKey)
+    {
+        var startDate = new DateTime(2019, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var splitSize = 7d;
+        if (tag == "ENCHANTED_BOOK" || tag == "unknown" || tag == null)
+        {
+            splitSize = 0.5;
+        }
+        return startDate.AddDays(timeKey * splitSize);
+    }
+
+    /// <summary>
+    /// Retrieves auctions from S3 storage for a specific date range
+    /// </summary>
+    private async Task<IEnumerable<CassandraAuction>> GetAuctionsFromS3(string itemTag, DateTime start, DateTime end, DateTime keyDate)
+    {
+        if (s3Storage == null)
+            return Enumerable.Empty<CassandraAuction>();
+
+        try
+        {
+            var year = keyDate.Year;
+            var month = keyDate.Month;
+            var auctions = await s3Storage.GetAuctions(itemTag, year, month);
+            
+            // Filter by date range
+            return auctions.Where(a => a.End > start && a.End <= end);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to retrieve auctions from S3 for {Tag} {Date}", itemTag, keyDate);
+            return Enumerable.Empty<CassandraAuction>();
         }
     }
 

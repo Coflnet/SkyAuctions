@@ -6,6 +6,7 @@ using System.Security.Cryptography.X509Certificates;
 using Cassandra;
 using System.IO;
 using System.Reflection;
+using Amazon.S3;
 using Coflnet.Sky.Auctions.Models;
 using Coflnet.Sky.Auctions.Services;
 using Coflnet.Sky.Core;
@@ -125,6 +126,36 @@ public class Startup
         services.AddSingleton<ProfileClient>();
         services.AddHostedService(s => s.GetRequiredService<ExportService>());
         services.AddSingleton<IPricesApi>(s => new PricesApi(Configuration["Api_BASE_URL"]));
+        
+        // S3 Storage for archived auctions (Cloudflare R2)
+        if (Configuration.GetValue<bool>("S3:ENABLED"))
+        {
+            services.AddSingleton<IAmazonS3>(p =>
+            {
+                var config = new AmazonS3Config
+                {
+                    ServiceURL = Configuration["S3:SERVICE_URL"],
+                    ForcePathStyle = true // Required for R2 and most S3-compatible services
+                };
+                return new AmazonS3Client(
+                    Configuration["S3:ACCESS_KEY"],
+                    Configuration["S3:SECRET_KEY"],
+                    config);
+            });
+            services.AddSingleton<S3AuctionStorage>();
+            
+            // S3 Migration service (for moving data from ScyllaDB to S3)
+            if (Configuration.GetValue<bool>("S3_MIGRATION:ENABLED"))
+            {
+                services.AddHostedService<S3MigrationService>();
+            }
+        }
+        else
+        {
+            // Register null S3 storage when not enabled
+            services.AddSingleton<S3AuctionStorage?>(p => null);
+        }
+        
         services.AddTransient<HypixelContext>(options =>
         {
             return new HypixelContext();

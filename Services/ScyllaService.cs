@@ -7,6 +7,7 @@ using Cassandra;
 using Cassandra.Data.Linq;
 using Cassandra.Mapping;
 using Coflnet.Sky.Auctions.Models;
+using Coflnet.Sky.Auctions.Services;
 using Coflnet.Sky.Core;
 using Coflnet.Sky.Filter;
 using fNbt.Tags;
@@ -43,10 +44,17 @@ public class ScyllaService
     public Table<QueryArchive> QueryArchiveTable { get; set; }
     private Table<CassandraBid> BidsTable { get; set; }
     private ILogger<ScyllaService> Logger { get; set; }
-    public ScyllaService(ISession session, ILogger<ScyllaService> logger)
+    
+    /// <summary>
+    /// S3 storage for archived auctions (optional, can be null)
+    /// </summary>
+    private S3AuctionStorage? S3Storage { get; set; }
+
+    public ScyllaService(ISession session, ILogger<ScyllaService> logger, S3AuctionStorage? s3Storage = null)
     {
         Session = session;
         Logger = logger;
+        S3Storage = s3Storage;
     }
 
     public async Task Create()
@@ -258,6 +266,19 @@ public class ScyllaService
         var uid = AuctionService.Instance.GetId(uuid.ToString());
         var result = await AuctionsTable.Where(a => a.AuctionUid == uid).ExecuteAsync();
         var auctions = result.ToArray();
+        
+        // If not found in ScyllaDB and S3 storage is available, try S3
+        if (auctions.Length == 0 && S3Storage != null)
+        {
+            Logger.LogDebug("Auction {Uuid} not found in ScyllaDB, checking S3", uuid);
+            var s3Auction = await S3Storage.GetAuctionByUuid(uuid, uid);
+            if (s3Auction != null)
+            {
+                Logger.LogInformation("Found auction {Uuid} in S3 storage", uuid);
+                return new[] { CassandraToOld(s3Auction) };
+            }
+        }
+        
         return auctions.Select(CassandraToOld).ToArray();
     }
 

@@ -16,6 +16,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="AWSSDK.S3" Version="3.7.400" />
     <PackageReference Include="Coflnet.Sky.Api.Client" Version="0.7.2" />
     <PackageReference Include="Coflnet.Sky.PlayerName.Client" Version="0.2.3" />
     <PackageReference Include="morelinq" Version="4.4.0" />
