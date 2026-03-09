@@ -307,7 +307,7 @@ public class ScyllaService
             HighestBidAmount = auction.HighestBidAmount,
             ItemName = auction.ItemName,
             Tag = auction.Tag,
-            Tier = (Tier)Enum.Parse(typeof(Tier), auction.Tier),
+            Tier = Enum.TryParse<Tier>(auction.Tier.Replace("SUPREME", "DIVINE"), out var tier) ? tier : Tier.UNKNOWN,
             StartingBid = auction.StartingBid,
             FlatenedNBT = auction.NbtLookup,
             ItemCreatedAt = auction.ItemCreatedAt,
