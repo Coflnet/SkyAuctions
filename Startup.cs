@@ -6,6 +6,7 @@ using System.Security.Cryptography.X509Certificates;
 using Cassandra;
 using System.IO;
 using System.Reflection;
+using Amazon.S3;
 using Coflnet.Sky.Auctions.Models;
 using Coflnet.Sky.Auctions.Services;
 using Coflnet.Sky.Core;
@@ -64,18 +65,20 @@ public class Startup
                 .EnableSensitiveDataLogging() // <-- These two calls are optional but help
                 .EnableDetailedErrors()       // <-- with debugging (remove for production).
         );
-        services.AddHostedService<SellsCollector>();
         services.AddJaeger(Configuration);
         services.AddTransient<BaseService>();
         services.AddSingleton<KafkaCreator>();
         services.AddSingleton<Coflnet.Sky.Kafka.KafkaCreator>();
+        services.AddSingleton<INBT, NBT>();
+        services.AddSingleton<ItemDetails>();
+        services.AddHttpClient();
         services.AddSingleton<IConnectionMultiplexer>(provider => ConnectionMultiplexer.Connect(Configuration["REDIS_HOST"]));
         services.AddSingleton<ISession>(p =>
         {
             Console.WriteLine("Connecting to Cassandra...");
             var builder = Cluster.Builder().AddContactPoints(Configuration["CASSANDRA:HOSTS"].Split(","))
                 .WithLoadBalancingPolicy(new TokenAwarePolicy(new DCAwareRoundRobinPolicy()))
-                .WithCompression(CompressionType.LZ4)
+                .WithCompression(global::Cassandra.CompressionType.LZ4)
                 .WithCredentials(Configuration["CASSANDRA:USER"], Configuration["CASSANDRA:PASSWORD"])
                 .WithDefaultKeyspace(Configuration["CASSANDRA:KEYSPACE"]);
 
@@ -96,7 +99,7 @@ public class Startup
                 var password = Configuration["CASSANDRA:X509Certificate_PASSWORD"] ?? throw new InvalidOperationException("CASSANDRA:X509Certificate_PASSWORD must be set if CASSANDRA:X509Certificate_PATHS is set.");
                 CustomRootCaCertificateValidator certificateValidator = null;
                 if (!string.IsNullOrEmpty(validationCertificatePath))
-                    certificateValidator = new CustomRootCaCertificateValidator(new X509Certificate2(validationCertificatePath, password));
+                    certificateValidator = new CustomRootCaCertificateValidator(X509CertificateLoader.LoadPkcs12FromFile(validationCertificatePath, password));
                 var sslOptions = new SSLOptions(
                     // TLSv1.2 is required as of October 9, 2019.
                     // See: https://www.instaclustr.com/removing-support-for-outdated-encryption-mechanisms/
@@ -104,7 +107,7 @@ public class Startup
                     false,
                     // Custom validator avoids need to trust the CA system-wide.
                     (sender, certificate, chain, errors) => certificateValidator?.Validate(certificate, chain, errors) ?? true
-                ).SetCertificateCollection(new(certificatePaths.Split(',').Select(p => new X509Certificate2(p, password)).ToArray()));
+                ).SetCertificateCollection(new(certificatePaths.Split(',').Select(p => X509CertificateLoader.LoadPkcs12FromFile(p, password)).ToArray()));
                 builder.WithSSL(sslOptions);
             }
             var cluster = builder.Build();
@@ -116,19 +119,64 @@ public class Startup
             Console.WriteLine("Connected to Cassandra");
             return session;
         });
-        services.AddHostedService<DeletingBackGroundService>();
         services.AddSingleton<ScyllaService>();
         services.AddSingleton<QueryService>();
         services.AddSingleton<FilterEngine>();
+        services.AddSingleton<UuidLookupService>();
         services.AddTransient<RestoreService>();
         services.AddSingleton<ExportService>();
         services.AddSingleton<ProfileClient>();
-        services.AddSingleton<INBT,NBT>();
-        services.AddSingleton<ItemDetails>();
-        services.AddHttpClient();
         services.AddHostedService(s => s.GetRequiredService<ExportService>());
         services.AddSingleton<Items.Client.Api.IItemsApi>(s => new Items.Client.Api.ItemsApi(Configuration["ITEMS_BASE_URL"]));
         services.AddSingleton<IPricesApi>(s => new PricesApi(Configuration["Api_BASE_URL"]));
+        
+        // S3 Storage for archived auctions (Cloudflare R2)
+        if (Configuration.GetValue<bool>("S3:ENABLED"))
+        {
+            services.AddSingleton<IAmazonS3>(p =>
+            {
+                var config = new AmazonS3Config
+                {
+                    ServiceURL = Configuration["S3:SERVICE_URL"],
+                    ForcePathStyle = true // Required for R2 and most S3-compatible services
+                };
+                return new AmazonS3Client(
+                    Configuration["S3:ACCESS_KEY"],
+                    Configuration["S3:SECRET_KEY"],
+                    config);
+            });
+            
+            // Core S3 services
+            services.AddSingleton<S3StorageService>();
+            services.AddSingleton<AuctionBlobSerializer>();
+            services.AddSingleton<S3AuctionBlobService>();
+            services.AddSingleton<BloomFilterService>();
+            services.AddSingleton<S3PlayerIndexService>();
+            services.AddSingleton<S3AuctionStorage>();
+            services.AddSingleton<ShadowReadService>();
+
+            // Initialize bloom filter on startup
+            services.AddHostedService<BloomFilterInitializer>();
+            
+            // Backfill services (migrate data to S3)
+            if (Configuration.GetValue<bool>("S3:BackfillScylla"))
+            {
+                services.AddHostedService<ScyllaToS3BackfillService>();
+            }
+            if (Configuration.GetValue<bool>("S3:BackfillMariaDb"))
+            {
+                services.AddHostedService<MariaDbToS3BackfillService>();
+            }
+        }
+
+        // Deletion is OFF by default until S3 archive is verified 100% for the targeted period.
+        // Toggle S3:EnableDeletion=true (and verify manually first!) to start deleting from MariaDB.
+        if (Configuration.GetValue<bool>("S3:EnableDeletion"))
+        {
+            services.AddHostedService<DeletingBackGroundService>();
+        }
+        services.AddHostedService<SellsCollector>();
+
         services.AddTransient<HypixelContext>(options =>
         {
             return new HypixelContext();
@@ -145,10 +193,10 @@ public class Startup
     /// <returns></returns>
     public string SHA256CheckSum(string filePath)
     {
-        using (SHA256 SHA256 = SHA256Managed.Create())
+        using (var sha256 = SHA256.Create())
         {
             using (FileStream fileStream = File.OpenRead(filePath))
-                return Convert.ToBase64String(SHA256.ComputeHash(fileStream));
+                return Convert.ToBase64String(sha256.ComputeHash(fileStream));
         }
     }
 

@@ -30,18 +30,27 @@ public class SellsCollector : BackgroundService
     private IConfiguration config;
     private ILogger<SellsCollector> logger;
     private ScyllaService scyllaService;
+    private S3AuctionBlobService s3Blobs;
+    private S3PlayerIndexService s3PlayerIndex;
+    private BloomFilterService bloomFilter;
     private static int currentOffset = 0;
     private Prometheus.Counter consumeCount = Prometheus.Metrics.CreateCounter("sky_base_conume", "How many messages were consumed");
     private Prometheus.Counter batchInsertCount = Prometheus.Metrics.CreateCounter("sky_auctions_batch_count", "How many batches were sent to scylla");
     private static Prometheus.Gauge offsetGauge = Prometheus.Metrics.CreateGauge("sky_auctions_offset", "Current offset in the database");
+    private readonly bool mirrorLiveDataToS3;
 
     public SellsCollector(
-        IServiceScopeFactory scopeFactory, IConfiguration config, ILogger<SellsCollector> logger, ScyllaService scyllaService)
+        IServiceScopeFactory scopeFactory, IConfiguration config, ILogger<SellsCollector> logger, ScyllaService scyllaService,
+        S3AuctionBlobService s3Blobs = null, S3PlayerIndexService s3PlayerIndex = null, BloomFilterService bloomFilter = null)
     {
         this.scopeFactory = scopeFactory;
         this.config = config;
         this.logger = logger;
         this.scyllaService = scyllaService;
+        this.s3Blobs = s3Blobs;
+        this.s3PlayerIndex = s3PlayerIndex;
+        this.bloomFilter = bloomFilter;
+        this.mirrorLiveDataToS3 = config.GetValue<bool>("S3:MirrorLiveData");
     }
     /// <summary>
     /// Called by asp.net on startup
@@ -318,6 +327,83 @@ public class SellsCollector : BackgroundService
             }
         });
         await Task.WhenAll(bidsTask);
+
+        if (mirrorLiveDataToS3)
+        {
+            try
+            {
+                await InsertSellsToS3(ab);
+            }
+            catch (Exception e)
+            {
+                logger.LogError(e, "S3 live mirroring failed; continuing without blocking Scylla ingestion");
+            }
+        }
+    }
+
+    private async Task InsertSellsToS3(IEnumerable<SaveAuction> ab)
+    {
+        if (s3Blobs == null || s3PlayerIndex == null || bloomFilter == null)
+        {
+            logger.LogWarning("S3 live mirroring is enabled but archive services are not registered");
+            return;
+        }
+
+        // Group by (tag, month) and write to S3
+        var groups = ab.GroupBy(a => (Tag: a.Tag ?? "unknown", Month: new DateTime(a.End.Year, a.End.Month, 1)));
+        foreach (var group in groups)
+        {
+            await s3Blobs.WriteAuctions(group.Key.Tag, group.Key.Month, group);
+        }
+
+        // Add to Bloom filter and player index
+        foreach (var auction in ab)
+        {
+            if (!AuctionIdentity.TryParseGuid(auction.Uuid, out var uuid))
+            {
+                logger.LogWarning("Skipping mirrored auction with invalid uuid {Uuid}", auction.Uuid);
+                continue;
+            }
+
+            bloomFilter.Add(uuid);
+
+            var sellerGuid = AuctionIdentity.ParseGuidOrEmpty(auction.AuctioneerId);
+            if (sellerGuid != Guid.Empty)
+            {
+                s3PlayerIndex.AddParticipations(sellerGuid, new[]
+                {
+                    new Models.PlayerParticipationEntry
+                    {
+                        AuctionUid = uuid,
+                        End = auction.End,
+                        Tag = auction.Tag,
+                        Type = Models.ParticipationType.Seller
+                    }
+                });
+            }
+
+            foreach (var bid in auction.Bids ?? Enumerable.Empty<SaveBids>())
+            {
+                var bidderGuid = AuctionIdentity.ParseGuidOrEmpty(bid.Bidder);
+                if (bidderGuid != Guid.Empty)
+                {
+                    s3PlayerIndex.AddParticipations(bidderGuid, new[]
+                    {
+                        new Models.PlayerParticipationEntry
+                        {
+                            AuctionUid = uuid,
+                            End = auction.End,
+                            Tag = auction.Tag,
+                            Type = Models.ParticipationType.Bidder
+                        }
+                    });
+                }
+            }
+        }
+
+        // Periodically flush player index and Bloom filter
+        await s3PlayerIndex.FlushAll();
+        await bloomFilter.FlushIfDirty();
     }
 
     private void StartWorkers(Channel<Func<Task>> channel, int count)

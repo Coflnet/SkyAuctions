@@ -1,293 +1,398 @@
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Hosting;
-using System;
-using Cassandra.Data.Linq;
-using System.Collections.Generic;
 using Cassandra;
+using Cassandra.Data.Linq;
 using Cassandra.Mapping;
-using System.Linq;
 using Coflnet.Sky.Core;
-using System.Text;
-using RestSharp;
-using Newtonsoft.Json;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace Coflnet.Sky.Auctions.Services;
 
 public class ExportService : BackgroundService
 {
-    Table<ExportRequest> exportRequests;
-    QueryService queryService;
-    ProfileClient profileClient;
-    ILogger<ExportService> logger;
-    public ExportService(ISession session, QueryService queryService, ProfileClient profileClient, ILogger<ExportService> logger)
+    private readonly Table<ExportRequest> exportJobs;
+    private readonly QueryService queryService;
+    private readonly S3StorageService s3;
+    private readonly ILogger<ExportService> logger;
+    private readonly ConcurrentQueue<Guid> pendingJobs = new();
+    private readonly ConcurrentDictionary<Guid, ExportRequest> knownJobs = new();
+    private readonly TimeSpan signedUrlDuration;
+
+    public ExportService(
+        ISession session,
+        QueryService queryService,
+        ILogger<ExportService> logger,
+        IConfiguration config,
+        S3StorageService s3 = null)
     {
         var mapping = new MappingConfiguration().Define(
             new Map<ExportRequest>()
-                .TableName("export_requests")
+                .TableName("export_jobs_v2")
                 .PartitionKey(e => e.ByEmail)
-                .ClusteringKey(e => e.RequestedAt)
+                .ClusteringKey(
+                    new Tuple<string, SortOrder>("requestedat", SortOrder.Descending),
+                    new Tuple<string, SortOrder>("jobid", SortOrder.Ascending))
                 .Column(e => e.Flags, cm => cm.WithDbType<int>())
                 .Column(e => e.Status, cm => cm.WithDbType<int>())
         );
-        exportRequests = new Table<ExportRequest>(session, mapping);
-        exportRequests.CreateIfNotExists();
-        // set table TTL
-        session.Execute($"ALTER TABLE export_requests WITH default_time_to_live = 86400");
-        this.queryService = queryService;
-        this.profileClient = profileClient;
-        this.logger = logger;
-    }
 
-    Queue<ExportRequest> pendingRequests = new Queue<ExportRequest>();
+        exportJobs = new Table<ExportRequest>(session, mapping);
+        exportJobs.CreateIfNotExists();
+        this.queryService = queryService;
+        this.s3 = s3;
+        this.logger = logger;
+
+        var signedMinutes = int.TryParse(config["S3:ExportSignedUrlMinutes"], out var minutes) ? minutes : 60 * 24;
+        signedUrlDuration = TimeSpan.FromMinutes(Math.Max(5, signedMinutes));
+    }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        // load from db
-        var requests = (await exportRequests.ExecuteAsync()).ToList();
-        foreach (var request in requests.OrderBy(r => r.RequestedAt))
-        {
-            if (request.Status != ExportStatus.Done)
-                pendingRequests.Enqueue(request);
-            else
-            {
-                logger.LogInformation($"Skipping {request.ByEmail} export for {request.ItemTag} request with status {request.Status}");
-            }
-        }
-        logger.LogInformation("Export service started {0} {total}", pendingRequests.Count, requests);
+        logger.LogInformation("Export service started");
         while (!stoppingToken.IsCancellationRequested)
         {
-            if (pendingRequests.Count > 0)
+            if (!pendingJobs.TryDequeue(out var jobId))
             {
-                var request = pendingRequests.Dequeue();
-                request.Status = ExportStatus.InProgress;
-                exportRequests.Insert(request).Execute();
-                try
-                {
-                    await RunExport(request);
-                }
-                catch (System.Exception e)
-                {
-                    logger.LogError(e, $"Failed to export {request.ItemTag} for {request.ByEmail}");
-                    request.Status = ExportStatus.Failed;
-                    exportRequests.Insert(request).Execute();
-                    pendingRequests.Enqueue(request);
-                    try
-                    {
-                        await SendExportFailureToDiscord(request, e);
-                    }
-                    catch (Exception ex)
-                    {
-                        logger.LogError(ex, "Failed to send export failure webhook");
-                    }
-                    await Task.Delay(10000, stoppingToken);
-                    continue;
-                }
-                request.Status = ExportStatus.Done;
-                exportRequests.Insert(request).Execute();
+                await Task.Delay(2000, stoppingToken);
+                continue;
             }
-            await Task.Delay(10000, stoppingToken);
+
+            if (!knownJobs.TryGetValue(jobId, out var request))
+            {
+                continue;
+            }
+
+            if (request.AbortRequested || request.Status != ExportStatus.Pending)
+            {
+                request.Status = ExportStatus.Aborted;
+                await Save(request);
+                continue;
+            }
+
+            request.Status = ExportStatus.InProgress;
+            await Save(request);
+
+            try
+            {
+                await RunExport(request, stoppingToken);
+            }
+            catch (OperationCanceledException) when (request.AbortRequested)
+            {
+                request.Status = ExportStatus.Aborted;
+                request.CompletedAt = DateTime.UtcNow;
+                await Save(request);
+            }
+            catch (Exception e)
+            {
+                logger.LogError(e, "Failed export job {JobId} for {Email}", request.JobId, request.ByEmail);
+                request.Status = ExportStatus.Failed;
+                request.Error = e.Message.Truncate(1024);
+                request.CompletedAt = DateTime.UtcNow;
+                await Save(request);
+            }
         }
     }
 
-    private async Task RunExport(ExportRequest request)
+    private async Task RunExport(ExportRequest request, CancellationToken ct)
     {
-        logger.LogInformation($"Exporting {request.ItemTag} for {request.ByEmail} {JsonConvert.SerializeObject(request)}");
-        var end = GetTimeKey(request, "EndBefore");
-        var start = GetTimeKey(request, "EndAfter");
-
-        var auctions = queryService.GetFiltered(request.ItemTag, request.Filters, start, end, request.ByEmail.Contains("thomaswilcox") ? 20_000 : 1000).ToBlockingEnumerable();
-        if (request.Flags.HasFlag(ExportFlags.UniqueItems))
+        if (s3 == null)
         {
-            auctions = auctions.GroupBy(a => a.FlatenedNBT.GetValueOrDefault("uid", Random.Shared.Next().ToString())).Select(g => g.OrderByDescending(g => g.End).First());
+            throw new CoflnetException("export_storage_disabled", "S3 export storage is not enabled");
         }
-        var resultBuilder = new StringBuilder();
-        var buyerUuids = auctions.Select(a => a.Bids.OrderByDescending(b => b.Amount).FirstOrDefault()).Where(b => b != null).Select(b => (b.Bidder, b.ProfileId)).Distinct().ToList();
-        var buyerLookup = new Dictionary<(string, string), BuyerLookup>();
-        logger.LogInformation($"Found {buyerUuids.Count} unique buyers, loading their details");
-        if (request.Flags.HasFlag(ExportFlags.InventoryCheck) || request.Flags.HasFlag(ExportFlags.IncludeSocial))
-            foreach (var item in buyerUuids)
+
+        logger.LogInformation(
+            "Exporting job {JobId} for {Email}: {Tag} {Start}..{End}",
+            request.JobId,
+            request.ByEmail,
+            request.ItemTag,
+            request.Start,
+            request.End);
+
+        if (request.End <= request.Start)
+        {
+            throw new CoflnetException("invalid_time_range", "End has to be after start");
+        }
+
+        var maxAgeStart = DateTime.UtcNow.AddDays(-14);
+        if (request.Start < maxAgeStart)
+        {
+            throw new CoflnetException("start_too_old", "Exports currently support at most the last 14 days");
+        }
+
+        if (request.End > DateTime.UtcNow.AddMinutes(5))
+        {
+            throw new CoflnetException("end_in_future", "End time may not be in the future");
+        }
+
+        var filters = (request.Filters ?? new Dictionary<string, string>())
+            .Where(kv => kv.Key != "EndAfter" && kv.Key != "EndBefore")
+            .ToDictionary(k => k.Key, v => v.Value);
+
+        var users = (request.Users ?? new List<string>())
+            .Where(u => !string.IsNullOrWhiteSpace(u))
+            .Select(u => u.Trim().ToLowerInvariant())
+            .ToHashSet();
+
+        var columns = BuildColumns(request.Columns);
+        var builder = new StringBuilder();
+        builder.AppendLine(string.Join(',', columns.Select(c => c.Name)));
+
+        var rowCount = 0;
+        await foreach (var auction in queryService.GetFiltered(request.ItemTag, filters, request.Start, request.End, int.MaxValue))
+        {
+            if (request.AbortRequested)
             {
-                var lookup = await profileClient.GetLookup(item.Bidder, item.ProfileId);
-                buyerLookup[item] = lookup;
+                throw new OperationCanceledException("Export aborted by user");
             }
-        var columnMapping = new Dictionary<string, Func<SaveAuction, string>>() { {
-            "uuid", a => a.Uuid.ToString() },
-            {"itemName", a=>a.ItemName},
-            {"highestBidAmount", a=>a.HighestBidAmount.ToString()},
-            {"bin", a=>a.Bin.ToString()},
-            {"endedAt", a=>a.End.ToString()},
-            {"buyerUuid", a=> GetBuyerProfile(a).Item1},
-            {"buyerProfile", a=> GetBuyerProfile(a).Item2},
-            {"itemUid", a=>a.FlatenedNBT.GetValueOrDefault("uid")?.ToString()},
-            {"inInventory", a => buyerLookup.GetValueOrDefault(GetBuyerProfile(a))?.ItemsInInventory?.GetValueOrDefault(a.FlatenedNBT.GetValueOrDefault("uid", a.Tag), "no")?.ToString() ?? "failed"},
-            {"itemsFoundInInventory", a => buyerLookup.GetValueOrDefault(GetBuyerProfile(a))?.ItemsInInventory.Count.ToString()},
-            {"profileFound", a => buyerLookup.GetValueOrDefault(GetBuyerProfile(a))?.ProfileNotFound.ToString()},
-            {"buyerName", a => buyerLookup.GetValueOrDefault(GetBuyerProfile(a))?.Name},
-            {"buyerLastLogin", a => buyerLookup.GetValueOrDefault(GetBuyerProfile(a))?.LastLogin.ToString()},
-             };
-        if (request.Flags.HasFlag(ExportFlags.IncludeSocial))
-        {
-            var socialAvailable = buyerLookup.Values.SelectMany(b => b.SocialLinks.Keys).GroupBy(s => s).Select(g => g.Key).ToList();
-            Console.WriteLine($"Social available {string.Join(", ", socialAvailable)}");
-            foreach (var social in socialAvailable)
+
+            if (users.Count > 0 && !MatchesUserFilter(auction, users))
             {
-                columnMapping[$"buyerSocial_{social}"] = a => buyerLookup.GetValueOrDefault(GetBuyerProfile(a))?.SocialLinks.GetValueOrDefault(social, "none");
+                continue;
             }
-        }
-        if (request.Columns == null || request.Columns.Count < 2)
-        {
-            request.Columns = columnMapping.Keys.ToList();
-        }
-        foreach (var column in request.Columns)
-        {
-            if (!columnMapping.ContainsKey(column))
-            {
-                throw new CoflnetException("invalid_column", $"Invalid column {column}");
-            }
-        }
-        resultBuilder.AppendLine(string.Join(',', request.Columns));
-        foreach (var auction in auctions)
-        {
-            foreach (var column in request.Columns)
-            {
-                resultBuilder.Append(columnMapping[column](auction));
-                resultBuilder.Append(',');
-            }
-            // remove last ,
-            resultBuilder.Length--;
-            resultBuilder.AppendLine();
-        }
-        logger.LogInformation($"Sending {auctions.Count()} auctions for {request.ItemTag} from {start} to {end}");
-        var client = new RestClient();
-        var webhookRequest = new RestRequest(request.DiscordWebhookUrl, Method.Post);
-        var title = $"Auction export for {request.ItemTag} from {start} to {end}";
-        // attach file to discord webhook
-        webhookRequest.AddFile("file", Encoding.UTF8.GetBytes(resultBuilder.ToString()), "auctions.csv", "text/csv");
-        webhookRequest.AddHeader("Content-Type", "multipart/form-data");
-        var payloadjson = JsonConvert.SerializeObject(new { content = title });
-        webhookRequest.AddParameter("payload_json", payloadjson, ParameterType.RequestBody);
 
-        var response = await client.ExecuteAsync(webhookRequest);
-        if (!response.IsSuccessful)
-        {
-            request.Status = ExportStatus.Failed;
-            exportRequests.Insert(request).Execute();
+            builder.AppendLine(string.Join(',', columns.Select(c => EscapeCsv(c.Value(auction)))));
+            rowCount++;
         }
 
+        var key = $"exports/{request.ByEmail}/{request.RequestedAt:yyyy-MM-dd}/{request.JobId:N}.csv";
+        var bytes = Encoding.UTF8.GetBytes(builder.ToString());
+        await s3.PutBlob(key, bytes, "text/csv", ct);
 
-        static DateTime GetTimeKey(ExportRequest request, string key)
-        {
-            return DateTimeOffset.FromUnixTimeSeconds(long.Parse(request.Filters.GetValueOrDefault(key)
-                ?? throw new CoflnetException($"missing_{key.ToLower()}", $"Missing {key} filter"))).DateTime;
-        }
+        request.S3Key = key;
+        request.SignedUrl = s3.GetSignedDownloadUrl(key, signedUrlDuration);
+        request.SignedUrlExpiresAt = DateTime.UtcNow.Add(signedUrlDuration);
+        request.Status = ExportStatus.Done;
+        request.RowCount = rowCount;
+        request.Error = null;
+        request.CompletedAt = DateTime.UtcNow;
+        await Save(request);
 
-        static string GetBuyerUuid(SaveAuction a)
-        {
-            return a.Bids.OrderByDescending(b => b.Amount).FirstOrDefault()?.Bidder;
-        }
-        static (string, string) GetBuyerProfile(SaveAuction a)
-        {
-            var bid = a.Bids.OrderByDescending(b => b.Amount).FirstOrDefault();
-            return (bid.Bidder ?? "none", bid.ProfileId ?? "none");
-        }
+        logger.LogInformation("Completed export job {JobId}: {Rows} rows", request.JobId, rowCount);
     }
-
-
 
     public async Task<ExportRequest> RequestExport(ExportRequest request)
     {
-        var waitingCount = pendingRequests.Where(r => r.ByEmail == request.ByEmail).Count();
-        if (waitingCount >= 4)
+        request.ByEmail = (request.ByEmail ?? string.Empty).Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(request.ByEmail))
         {
-            logger.LogError($"Too many requests from {request.ByEmail} already in progress, please wait for one of them to finish");
-            throw new CoflnetException("to_many_requests", "Too many requests from you already in progress, please wait for one of them to finish");
+            throw new CoflnetException("missing_email", "ByEmail is required");
         }
-        await exportRequests.Insert(request).ExecuteAsync();
-        pendingRequests.Enqueue(request);
 
-        await SendExportQueueNoteToDiscord(request);
+        request.ItemTag = request.ItemTag?.Trim();
+        if (string.IsNullOrWhiteSpace(request.ItemTag))
+        {
+            throw new CoflnetException("missing_item", "ItemTag is required");
+        }
+
+        request.JobId = request.JobId == Guid.Empty ? Guid.NewGuid() : request.JobId;
+        request.RequestedAt = request.RequestedAt == default ? DateTime.UtcNow : request.RequestedAt;
+
+        if (request.Start == default && request.Filters?.TryGetValue("EndAfter", out var startUnix) == true)
+        {
+            request.Start = DateTimeOffset.FromUnixTimeSeconds(long.Parse(startUnix)).UtcDateTime;
+        }
+        if (request.End == default && request.Filters?.TryGetValue("EndBefore", out var endUnix) == true)
+        {
+            request.End = DateTimeOffset.FromUnixTimeSeconds(long.Parse(endUnix)).UtcDateTime;
+        }
+
+        if (request.Start == default || request.End == default)
+        {
+            throw new CoflnetException("missing_time_range", "Start and End are required");
+        }
+
+        request.Status = ExportStatus.Pending;
+        request.AbortRequested = false;
+
+        await Save(request);
+        knownJobs[request.JobId] = request;
+        pendingJobs.Enqueue(request.JobId);
+
         return request;
     }
 
-    private async Task SendExportQueueNoteToDiscord(ExportRequest request)
+    public async Task<IEnumerable<ExportRequest>> GetJobs(string email)
     {
-        var client = new RestClient();
-        var webhookRequest = new RestRequest(request.DiscordWebhookUrl, Method.Post);
-        var title = $"Export request for {request.ItemTag} queued";
-        var payloadjson = JsonConvert.SerializeObject(new { content = title });
-        webhookRequest.AddParameter("payload_json", payloadjson, ParameterType.RequestBody);
-        var response = await client.ExecuteAsync(webhookRequest);
-        if (!response.IsSuccessful)
-        {
-            logger.LogError($"Failed to send webhook for {request.ItemTag} export request");
-        }
+        var normalized = NormalizeEmail(email);
+        var jobs = await exportJobs.Where(r => r.ByEmail == normalized).ExecuteAsync();
+        return jobs.OrderByDescending(j => j.RequestedAt);
     }
 
-    private async Task SendExportFailureToDiscord(ExportRequest request, Exception e)
+    public async Task<IEnumerable<ExportRequest>> GetScheduled(string email)
     {
-        if (string.IsNullOrEmpty(request?.DiscordWebhookUrl))
-            return;
+        var jobs = await GetJobs(email);
+        return jobs.Where(j => j.Status == ExportStatus.Pending || j.Status == ExportStatus.InProgress);
+    }
 
-        try
+    public async Task<IEnumerable<ExportRequest>> GetExports(string email)
+    {
+        var jobs = await GetJobs(email);
+        return jobs.Where(j =>
+            j.Status == ExportStatus.Done ||
+            j.Status == ExportStatus.Failed ||
+            j.Status == ExportStatus.Deleted);
+    }
+
+    public async Task AbortScheduled(string email, Guid jobId)
+    {
+        var job = await GetJob(email, jobId);
+        if (job == null)
         {
-            var client = new RestClient();
-            var webhookRequest = new RestRequest(request.DiscordWebhookUrl, Method.Post);
-            var title = $"Export failed for {request.ItemTag}";
-            var content = new StringBuilder();
-            content.AppendLine(title);
-            content.AppendLine($"User: {request.ByEmail}");
-            content.AppendLine($"Status: {request.Status}");
-            content.AppendLine($"Error: {e.Message}");
-            if (!string.IsNullOrEmpty(e.StackTrace))
+            throw new CoflnetException("not_found", "Export job not found");
+        }
+
+        if (job.Status == ExportStatus.Done || job.Status == ExportStatus.Deleted)
+        {
+            throw new CoflnetException("not_abortable", "Completed exports cannot be aborted");
+        }
+
+        job.AbortRequested = true;
+        if (job.Status == ExportStatus.Pending)
+        {
+            job.Status = ExportStatus.Aborted;
+            job.CompletedAt = DateTime.UtcNow;
+        }
+
+        await Save(job);
+        knownJobs[job.JobId] = job;
+    }
+
+    public async Task DeleteExport(string email, Guid jobId)
+    {
+        if (s3 == null)
+        {
+            throw new CoflnetException("export_storage_disabled", "S3 export storage is not enabled");
+        }
+
+        var job = await GetJob(email, jobId);
+        if (job == null)
+        {
+            throw new CoflnetException("not_found", "Export job not found");
+        }
+
+        if (job.Status == ExportStatus.InProgress || job.Status == ExportStatus.Pending)
+        {
+            throw new CoflnetException("job_active", "Abort scheduled export before deleting");
+        }
+
+        if (!string.IsNullOrWhiteSpace(job.S3Key))
+        {
+            await s3.DeleteBlob(job.S3Key);
+        }
+
+        job.SignedUrl = null;
+        job.SignedUrlExpiresAt = null;
+        job.Status = ExportStatus.Deleted;
+        job.CompletedAt = DateTime.UtcNow;
+
+        await Save(job);
+        knownJobs[job.JobId] = job;
+    }
+
+    private async Task<ExportRequest> GetJob(string email, Guid jobId)
+    {
+        var jobs = await exportJobs.Where(r => r.ByEmail == NormalizeEmail(email)).ExecuteAsync();
+        return jobs.FirstOrDefault(j => j.JobId == jobId);
+    }
+
+    private Task Save(ExportRequest request)
+    {
+        return exportJobs.Insert(request).ExecuteAsync();
+    }
+
+    private static string NormalizeEmail(string email) => (email ?? string.Empty).Trim().ToLowerInvariant();
+
+    private static bool MatchesUserFilter(SaveAuction auction, HashSet<string> users)
+    {
+        if (!string.IsNullOrWhiteSpace(auction.AuctioneerId) && users.Contains(auction.AuctioneerId.ToLowerInvariant()))
+        {
+            return true;
+        }
+
+        foreach (var bid in auction.Bids ?? new List<SaveBids>())
+        {
+            if (!string.IsNullOrWhiteSpace(bid.Bidder) && users.Contains(bid.Bidder.ToLowerInvariant()))
             {
-                var firstLine = e.StackTrace.Split('\n').FirstOrDefault()?.Trim();
-                if (!string.IsNullOrEmpty(firstLine))
-                    content.AppendLine($"Trace: {firstLine}");
+                return true;
             }
+        }
 
-            var payloadjson = JsonConvert.SerializeObject(new { content = content.ToString() });
-            webhookRequest.AddParameter("payload_json", payloadjson, ParameterType.RequestBody);
-            var response = await client.ExecuteAsync(webhookRequest);
-            if (!response.IsSuccessful)
+        return false;
+    }
+
+    private static string EscapeCsv(string value)
+    {
+        value ??= string.Empty;
+        var escaped = value.Replace("\"", "\"\"");
+        if (escaped.Contains(',') || escaped.Contains('"') || escaped.Contains('\n') || escaped.Contains('\r'))
+        {
+            return $"\"{escaped}\"";
+        }
+
+        return escaped;
+    }
+
+    private static List<(string Name, Func<SaveAuction, string> Value)> BuildColumns(List<string> columns)
+    {
+        var mapping = new Dictionary<string, Func<SaveAuction, string>>(StringComparer.OrdinalIgnoreCase)
+        {
+            { "uuid", a => a.Uuid.ToString() },
+            { "itemTag", a => a.Tag ?? string.Empty },
+            { "itemName", a => a.ItemName ?? string.Empty },
+            { "highestBidAmount", a => a.HighestBidAmount.ToString() },
+            { "bin", a => a.Bin.ToString() },
+            { "endedAt", a => a.End.ToString("O") },
+            { "startedAt", a => a.Start.ToString("O") },
+            { "sellerUuid", a => a.AuctioneerId ?? string.Empty },
+            { "highestBidderUuid", a => a.Bids?.OrderByDescending(b => b.Amount).FirstOrDefault()?.Bidder ?? string.Empty },
+            { "itemUid", a => a.FlatenedNBT.GetValueOrDefault("uid")?.ToString() ?? string.Empty },
+        };
+
+        var requested = columns == null || columns.Count == 0
+            ? new List<string> { "uuid", "itemTag", "itemName", "highestBidAmount", "bin", "startedAt", "endedAt", "sellerUuid", "highestBidderUuid", "itemUid" }
+            : columns;
+
+        var result = new List<(string Name, Func<SaveAuction, string> Value)>();
+        foreach (var column in requested)
+        {
+            if (!mapping.TryGetValue(column, out var selector))
             {
-                logger.LogError($"Failed to send failure webhook for {request.ItemTag}: {response.StatusCode} {response.ErrorMessage}");
+                throw new CoflnetException("invalid_column", $"Invalid column {column}");
             }
+            result.Add((column, selector));
         }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Exception while sending failure webhook");
-        }
-    }
 
-    public async Task CancelExport(string email)
-    {
-        var request = pendingRequests.FirstOrDefault(r => r.ByEmail == email);
-        if (request != null)
-        {
-            pendingRequests = new Queue<ExportRequest>(pendingRequests.Where(r => r.ByEmail != email));
-            request.Status = ExportStatus.Cancelled;
-            await exportRequests.Insert(request).ExecuteAsync();
-        }
-    }
-
-    internal async Task<IEnumerable<ExportRequest>> GetExports(string email)
-    {
-        return await exportRequests.Where(r => r.ByEmail == email).ExecuteAsync();
+        return result;
     }
 
     public class ExportRequest
     {
+        public Guid JobId { get; set; }
         public string ByEmail { get; set; }
-        public string DiscordWebhookUrl { get; set; }
         public DateTime RequestedAt { get; set; }
         public string ItemTag { get; set; }
+        public DateTime Start { get; set; }
+        public DateTime End { get; set; }
         public Dictionary<string, string> Filters { get; set; }
+        public List<string> Users { get; set; }
         public ExportFlags Flags { get; set; }
         public List<string> Columns { get; set; }
-        public string S3Url { get; set; }
+        public string S3Key { get; set; }
+        public string SignedUrl { get; set; }
+        public DateTime? SignedUrlExpiresAt { get; set; }
+        public int RowCount { get; set; }
         public ExportStatus Status { get; set; }
+        public bool AbortRequested { get; set; }
+        public DateTime? CompletedAt { get; set; }
+        public string Error { get; set; }
+        public string DiscordWebhookUrl { get; set; }
     }
 
     public enum ExportStatus
@@ -296,14 +401,15 @@ public class ExportService : BackgroundService
         InProgress,
         Done,
         Failed,
-        Cancelled
+        Aborted,
+        Deleted
     }
 
     [Flags]
     public enum ExportFlags
     {
         None,
-        IncludeSocial,
+        IncludeSocial = 1,
         InventoryCheck = 2,
         UniqueItems = 4
     }

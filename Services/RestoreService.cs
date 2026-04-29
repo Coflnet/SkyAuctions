@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Cassandra.Data.Linq;
+using Coflnet.Sky.Auctions.Services;
 using Coflnet.Kafka;
 using Coflnet.Sky.Core;
 using Coflnet.Sky.Core.Migrations;
@@ -17,13 +18,15 @@ namespace Coflnet.Sky.Auctions;
 public class RestoreService
 {
     private readonly ScyllaService scyllaService;
+    private readonly UuidLookupService uuidLookup;
     private readonly ILogger<RestoreService> logger;
     private readonly HypixelContext context;
     private readonly IProducer<string, DeleteRequest> deleteProducer;
 
-    public RestoreService(ScyllaService scyllaService, HypixelContext context, ILogger<RestoreService> logger, Kafka.KafkaCreator kafkaCreator)
+    public RestoreService(ScyllaService scyllaService, UuidLookupService uuidLookup, HypixelContext context, ILogger<RestoreService> logger, Kafka.KafkaCreator kafkaCreator)
     {
         this.scyllaService = scyllaService;
+        this.uuidLookup = uuidLookup;
         this.context = context;
         this.logger = logger;
         deleteProducer = kafkaCreator.BuildProducer<string, DeleteRequest>();
@@ -48,7 +51,18 @@ public class RestoreService
     /// <returns></returns>
     public async Task<SaveAuction> RestoreAuction(Guid auctionid)
     {
-        var auction = await scyllaService.GetCombinedAuction(auctionid);
+        SaveAuction auction;
+        try
+        {
+            auction = await scyllaService.GetCombinedAuction(auctionid);
+        }
+        catch
+        {
+            // Fall back to tiered resolution (MariaDB → S3)
+            auction = await uuidLookup.ResolveAuction(auctionid);
+        }
+        if (auction == null)
+            throw new CoflnetException("not_found", $"Auction {auctionid} not found in any store");
         await context.Auctions.AddAsync(auction);
         await context.SaveChangesAsync();
         return auction;
@@ -73,7 +87,7 @@ public class RestoreService
             }
             catch (System.Exception)
             {
-                var fromDb = auctions.Where(a => Guid.Parse(a.Uuid) == id).ToList();
+                var fromDb = auctions.Where(a => AuctionIdentity.Matches(id, a.Uuid)).ToList();
                 if (fromDb.Count == 0)
                 {
                     logger.LogWarning("Auction {0} not found in database", id);
@@ -97,7 +111,9 @@ public class RestoreService
         });
         try
         {
-            var archivedAuctions = (await Task.WhenAll(archivedVersionTask)).ToDictionary(a => a.Uuid);
+            var archivedAuctions = (await Task.WhenAll(archivedVersionTask))
+                .Where(a => a != null)
+                .ToDictionary(a => a.Uuid);
             foreach (var auction in auctions)
             {
                 await NewMethod(archivedAuctions, auction);

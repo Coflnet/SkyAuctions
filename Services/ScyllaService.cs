@@ -7,6 +7,7 @@ using Cassandra;
 using Cassandra.Data.Linq;
 using Cassandra.Mapping;
 using Coflnet.Sky.Auctions.Models;
+using Coflnet.Sky.Auctions.Services;
 using Coflnet.Sky.Core;
 using Coflnet.Sky.Filter;
 using fNbt.Tags;
@@ -22,7 +23,6 @@ public class ScyllaService
 
     public const int MaxRandomItemUid = 9999;
     private Table<ScyllaAuction> _auctionsTable;
-    private FilterEngine filterEngine;
     public Table<ScyllaAuction> AuctionsTable
     {
         get
@@ -44,11 +44,21 @@ public class ScyllaService
     public Table<QueryArchive> QueryArchiveTable { get; set; }
     private Table<CassandraBid> BidsTable { get; set; }
     private ILogger<ScyllaService> Logger { get; set; }
-    public ScyllaService(ISession session, ILogger<ScyllaService> logger, FilterEngine filterEngine)
+    private FilterEngine FilterEngine { get; set; }
+    
+    /// <summary>
+    /// S3 storage for archived auctions (optional, can be null)
+    /// </summary>
+    private S3AuctionStorage S3Storage { get; set; }
+    private ShadowReadService ShadowRead { get; set; }
+
+    public ScyllaService(ISession session, ILogger<ScyllaService> logger, FilterEngine filterEngine, S3AuctionStorage s3Storage = null, ShadowReadService shadowRead = null)
     {
         Session = session;
         Logger = logger;
-        this.filterEngine = filterEngine;
+        FilterEngine = filterEngine;
+        S3Storage = s3Storage;
+        ShadowRead = shadowRead;
     }
 
     public async Task Create()
@@ -257,9 +267,22 @@ public class ScyllaService
 
     public async Task<SaveAuction[]> GetAuction(Guid uuid)
     {
-        var uid = AuctionService.Instance.GetId(uuid.ToString());
+        var uid = AuctionService.Instance.GetId(uuid.ToString("N"));
         var result = await AuctionsTable.Where(a => a.AuctionUid == uid).ExecuteAsync();
         var auctions = result.ToArray();
+        
+        // If not found in ScyllaDB and S3 storage is available, try S3
+        if (auctions.Length == 0 && S3Storage != null)
+        {
+            Logger.LogDebug("Auction {Uuid} not found in ScyllaDB, checking S3", uuid);
+            var s3Auction = await S3Storage.GetAuctionByUuid(uuid, uid);
+            if (s3Auction != null)
+            {
+                Logger.LogInformation("Found auction {Uuid} in S3 storage", uuid);
+                return new[] { s3Auction };
+            }
+        }
+        
         return auctions.Select(CassandraToOld).ToArray();
     }
 
@@ -297,44 +320,52 @@ public class ScyllaService
 
     public static SaveAuction CassandraToOld(CassandraAuction auction)
     {
+        var nbtLookup = auction.NbtLookup ?? new Dictionary<string, string>();
+        var category = Enum.TryParse<Category>(auction.Category, out var parsedCategory) ? parsedCategory : Category.UNKNOWN;
+        var tier = Enum.TryParse<Tier>(auction.Tier?.Replace("SUPREME", "DIVINE"), out var parsedTier) ? parsedTier : Tier.UNKNOWN;
+        var modifier = nbtLookup.GetValueOrDefault("modifier");
+        var reforge = Enum.TryParse<ItemReferences.Reforge>(modifier, out var parsedReforge) ? parsedReforge : ItemReferences.Reforge.None;
+
         return new SaveAuction()
         {
             AuctioneerId = auction.Auctioneer.ToString("N"),
             Bin = auction.Bin,
-            Category = (Category)Enum.Parse(typeof(Category), auction.Category),
+            Category = category,
             Coop = auction.Coop,
             End = auction.End,
             HighestBidAmount = auction.HighestBidAmount,
             ItemName = auction.ItemName,
             Tag = auction.Tag,
-            Tier = Enum.TryParse<Tier>(auction.Tier.Replace("SUPREME", "DIVINE"), out var tier) ? tier : Tier.UNKNOWN,
+            Tier = tier,
             StartingBid = auction.StartingBid,
-            FlatenedNBT = auction.NbtLookup,
+            FlatenedNBT = nbtLookup,
             ItemCreatedAt = auction.ItemCreatedAt,
             ProfileId = auction.ProfileId.ToString("N"),
             Uuid = auction.Uuid.ToString("N"),
             Count = auction.Count,
 
-            AnvilUses = (short)int.Parse(auction.NbtLookup.GetValueOrDefault("anvil_uses", "0")),
-            Reforge = auction.NbtLookup.GetValueOrDefault("modifier") == null ? ItemReferences.Reforge.None : (ItemReferences.Reforge)Enum.Parse(typeof(ItemReferences.Reforge), auction.NbtLookup.GetValueOrDefault("modifier")),
-            Bids = auction.Bids.Select(b => new SaveBids()
+            AnvilUses = short.TryParse(nbtLookup.GetValueOrDefault("anvil_uses", "0"), out var anvilUses) ? anvilUses : (short)0,
+            Reforge = reforge,
+            Bids = auction.Bids?.Select(b => new SaveBids()
             {
                 Amount = b.Amount,
                 AuctionId = b.AuctionUuid.ToString("N"),
                 Bidder = b.BidderUuid.ToString("N"),
                 Timestamp = b.Timestamp,
                 ProfileId = b.ProfileId.ToString("N"),
-            }).ToList(),
+            }).ToList() ?? new List<SaveBids>(),
             NbtData = new NbtData()
             {
                 data = auction.ItemBytes
             },
-            Enchantments = auction.Enchantments.Select(e => new Enchantment()
+            Enchantments = auction.Enchantments?.Select(e => new Enchantment()
             {
                 Level = (byte)e.Value,
                 Type = Enum.TryParse<EnchantmentType>(e.Key, out var parsed) ? parsed : EnchantmentType.unknown,
-            }).ToList(),
-            UId = AuctionService.Instance.GetId(auction.Uuid.ToString()),
+            }).ToList() ?? new List<Enchantment>(),
+            UId = auction is ScyllaAuction scyllaAuction && scyllaAuction.AuctionUid != 0
+                ? scyllaAuction.AuctionUid
+                : AuctionService.Instance.GetId(auction.Uuid.ToString("N")),
             Start = auction.Start,
         };
     }
@@ -351,7 +382,12 @@ public class ScyllaService
         Console.WriteLine(JsonConvert.SerializeObject(statement.QueryTrace.Events.Select(s => s.ToString()), Formatting.Indented));
         Console.WriteLine(JsonConvert.SerializeObject(statement.QueryTrace.Parameters));
         Console.WriteLine(JsonConvert.SerializeObject(statement.QueryTrace.RequestType));
-        return ToOldFormat(result);
+        var converted = ToOldFormat(result).ToList();
+        if (ShadowRead != null && ShadowRead.IsEnabled)
+        {
+            ShadowRead.ComparePlayer(playerUuid, converted);
+        }
+        return converted;
     }
 
     public async Task<IEnumerable<AveragePrice>> GetSoldAuctionsBetween(string itemTag, DateTime start, DateTime end)
@@ -499,7 +535,13 @@ public class ScyllaService
         var batch = await AuctionsTable.Where(a => a.Tag == itemTag && (a.TimeKey == currentMonth || a.TimeKey == previousMonth)
                     && a.End > DateTime.UtcNow - TimeSpan.FromDays(days) && a.End < DateTime.UtcNow && a.IsSold).ExecuteAsync();
 
-        var result = filterEngine.Filter(batch.Select(CassandraToOld), dictionary).ToList();
+        var rows = batch.ToList();
+        var result = FilterEngine.Filter(rows.Select(CassandraToOld), dictionary).ToList();
+        if (ShadowRead != null && ShadowRead.IsEnabled)
+        {
+            // Shadow read against the S3 archive for the current month - useful once live mirroring is on.
+            ShadowRead.CompareTagMonth("sumary", itemTag, DateTime.UtcNow, rows.Select(CassandraToOld).ToList());
+        }
         if (result.Count == 0)
             return new PriceSumary();
         if (result.GroupBy(a => a.Uuid).Any(g => g.Count() > 1))

@@ -18,15 +18,17 @@ public class AuctionController : ControllerBase
 {
     private readonly ScyllaService scyllaService;
     private readonly QueryService queryService;
+    private readonly UuidLookupService uuidLookup;
 
     /// <summary>
     /// Creates a new instance of <see cref="AuctionController"/>
     /// </summary>
     /// <param name="service"></param>
-    public AuctionController(ScyllaService service, QueryService queryService)
+    public AuctionController(ScyllaService service, QueryService queryService, UuidLookupService uuidLookup)
     {
         this.scyllaService = service;
         this.queryService = queryService;
+        this.uuidLookup = uuidLookup;
     }
 
     /// <summary>
@@ -38,7 +40,15 @@ public class AuctionController : ControllerBase
     [Route("{uuid}")]
     public async Task<SaveAuction[]> GetAuctions(string uuid)
     {
-        return await scyllaService.GetAuction(Guid.Parse(uuid));
+        var guid = Guid.Parse(uuid);
+        var auctions = await scyllaService.GetAuction(guid);
+        if (auctions.Length > 0)
+        {
+            return auctions;
+        }
+
+        var resolved = await uuidLookup.ResolveAuction(guid);
+        return resolved == null ? Array.Empty<SaveAuction>() : new[] { resolved };
     }
     /// <summary>
     /// Gets legacy saveauction by uuid
@@ -49,9 +59,25 @@ public class AuctionController : ControllerBase
     [Route("{uuid}")]
     public async Task<SaveAuction> GetAuction(string uuid)
     {
-        var auctions = await scyllaService.GetAuction(Guid.Parse(uuid));
-        Response.Headers.Add("X-Total-Count", auctions.Length.ToString());
-        return scyllaService.CombineVersions(auctions);
+        var guid = Guid.Parse(uuid);
+        // Try Scylla first (fast path)
+        var auctions = await scyllaService.GetAuction(guid);
+        if (auctions.Length > 0)
+        {
+            Response.Headers["X-Total-Count"] = auctions.Length.ToString();
+            return scyllaService.CombineVersions(auctions);
+        }
+
+        // Fall back to tiered resolution (MariaDB → S3)
+        var result = await uuidLookup.ResolveAuction(guid);
+        if (result != null)
+        {
+            Response.Headers["X-Total-Count"] = "1";
+            return result;
+        }
+
+        Response.StatusCode = 404;
+        return null;
     }
     /// <summary>
     /// Recently sold auctions for a specific item

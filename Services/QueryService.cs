@@ -5,9 +5,11 @@ using System.Threading.Tasks;
 using Cassandra;
 using Cassandra.Data.Linq;
 using Coflnet.Sky.Auctions.Models;
+using Coflnet.Sky.Auctions.Services;
 using Coflnet.Sky.Core;
 using Coflnet.Sky.Filter;
 using Coflnet.Sky.PlayerName.Client.Api;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
 namespace Coflnet.Sky.Auctions;
@@ -18,13 +20,21 @@ public class QueryService
     private readonly ILogger<QueryService> logger;
     private readonly FilterEngine filterService;
     private readonly IPlayerNameApi playerNameApi;
+    private readonly S3AuctionStorage s3Storage;
+    private readonly ShadowReadService shadowRead;
+    private readonly int monthsInScylla;
 
-    public QueryService(ScyllaService scyllaService, ILogger<QueryService> logger, FilterEngine filterService, IPlayerNameApi playerNameApi)
+    public QueryService(ScyllaService scyllaService, ILogger<QueryService> logger, FilterEngine filterService, IPlayerNameApi playerNameApi, IConfiguration config, S3AuctionStorage s3Storage = null, ShadowReadService shadowRead = null)
     {
         this.scyllaService = scyllaService;
         this.logger = logger;
         this.filterService = filterService;
         this.playerNameApi = playerNameApi;
+        this.s3Storage = s3Storage;
+        this.shadowRead = shadowRead;
+        monthsInScylla = config.GetValue<int?>("S3_MIGRATION:MONTHS_TO_KEEP_IN_SCYLLA")
+            ?? config.GetValue<int?>("S3:MonthsToKeepInScylla")
+            ?? 3;
     }
 
     public async Task<IEnumerable<QueryArchive>> GetPriceSumary(string itemTag, Dictionary<string, string> query)
@@ -67,10 +77,51 @@ public class QueryService
         var endKey = ScyllaService.GetWeekOrDaysSinceStart(itemTag, end);
         var startKey = ScyllaService.GetWeekOrDaysSinceStart(itemTag, start);
         var returnCount = 0;
+        var scyllaCutoff = DateTime.UtcNow.AddMonths(-monthsInScylla);
+        var s3MonthCache = new Dictionary<DateTime, IReadOnlyList<CassandraAuction>>();
+        var servedS3Months = new HashSet<DateTime>();
+
         // reverse from end to start
         foreach (var key in Enumerable.Range(startKey, endKey - startKey + 1).Reverse())
         {
-            var baseData = await table.Where(a => a.End > start && a.End <= end && a.IsSold  && a.Tag == itemTag && a.TimeKey == key).ExecuteAsync();
+            // Determine if this time range is in ScyllaDB or S3
+            var keyDate = GetDateFromTimeKey(itemTag, key);
+
+            IEnumerable<CassandraAuction> baseData;
+            if (keyDate >= scyllaCutoff)
+            {
+                // Data is in ScyllaDB
+                var scyllaList = (await table.Where(a => a.End > start && a.End <= end && a.IsSold && a.Tag == itemTag && a.TimeKey == key).ExecuteAsync()).ToList();
+                baseData = scyllaList;
+                // Shadow compare against S3 (passive) - only useful when archive has been backfilled for that month
+                if (shadowRead != null && shadowRead.IsEnabled)
+                {
+                    shadowRead.CompareTagMonth("filter", itemTag, keyDate, scyllaList.Select(ScyllaService.CassandraToOld).ToList());
+                }
+            }
+            else if (s3Storage != null)
+            {
+                // Data should be in S3
+                var month = new DateTime(keyDate.Year, keyDate.Month, 1, 0, 0, 0, DateTimeKind.Utc);
+                if (!servedS3Months.Add(month))
+                {
+                    continue;
+                }
+
+                if (!s3MonthCache.TryGetValue(month, out var cachedMonth))
+                {
+                    cachedMonth = (await GetAuctionsFromS3(itemTag, start, end, keyDate)).ToList();
+                    s3MonthCache[month] = cachedMonth;
+                }
+
+                baseData = cachedMonth;
+            }
+            else
+            {
+                // No S3 storage configured, try ScyllaDB anyway
+                baseData = await table.Where(a => a.End > start && a.End <= end && a.IsSold && a.Tag == itemTag && a.TimeKey == key).ExecuteAsync();
+            }
+
             var result = AddFilter(filters, baseData).ToList();
             foreach (var item in result)
             {
@@ -84,16 +135,53 @@ public class QueryService
         }
     }
 
+    /// <summary>
+    /// Gets the approximate date for a time key
+    /// </summary>
+    private static DateTime GetDateFromTimeKey(string tag, int timeKey)
+    {
+        var startDate = new DateTime(2019, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var splitSize = 7d;
+        if (tag == "ENCHANTED_BOOK" || tag == "unknown" || tag == null)
+        {
+            splitSize = 0.5;
+        }
+        return startDate.AddDays(timeKey * splitSize);
+    }
+
+    /// <summary>
+    /// Retrieves auctions from S3 storage for a specific date range
+    /// </summary>
+    private async Task<IEnumerable<CassandraAuction>> GetAuctionsFromS3(string itemTag, DateTime start, DateTime end, DateTime keyDate)
+    {
+        if (s3Storage == null)
+            return Enumerable.Empty<CassandraAuction>();
+
+        try
+        {
+            var year = keyDate.Year;
+            var month = keyDate.Month;
+            var auctions = await s3Storage.GetAuctions(itemTag, year, month);
+            
+            // Filter by date range
+            return auctions.Where(a => a.IsSold && a.End > start && a.End <= end);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to retrieve auctions from S3 for {Tag} {Date}", itemTag, keyDate);
+            return Enumerable.Empty<CassandraAuction>();
+        }
+    }
+
     internal async Task<IEnumerable<ItemPrices.AuctionPreview>> GetRecentOverview(string itemTag, Dictionary<string, string> query)
     {
         var end = DateTime.UtcNow;
         var start = end.AddHours(-1);
-        // if the auctions are rewritten to be sorted by end desc this order by could be avoided
-        List<SaveAuction> result = await GetAuctions(itemTag, query, end, start);
+        var result = await LoadAuctions(itemTag, query, start, end);
         if (result.Count < 12)
         {
             start = start.AddDays(-13); // two weeks
-            result.AddRange(await GetAuctions(itemTag, query, end, start));
+            result = await LoadAuctions(itemTag, query, start, end);
             logger.LogInformation($"Found {result.Count} auctions for {itemTag} in the last 2 weeks");
         }
         var playerIds = await playerNameApi.PlayerNameNamesBatchPostAsync(result.Select(a => a.AuctioneerId).Distinct().ToList());
@@ -105,14 +193,17 @@ public class QueryService
             Uuid = a.Uuid,
             PlayerName = playerIds?.GetValueOrDefault(a.AuctioneerId, a.AuctioneerId)
         });
+    }
 
-        async Task<List<SaveAuction>> GetAuctions(string itemTag, Dictionary<string, string> query, DateTime end, DateTime start)
+    private async Task<List<SaveAuction>> LoadAuctions(string itemTag, Dictionary<string, string> query, DateTime start, DateTime end)
+    {
+        var result = new List<SaveAuction>();
+        await foreach (var auction in GetFiltered(itemTag, query, start, end, 12))
         {
-            var baseData = await scyllaService.AuctionsTable.Where(a => a.End > start && a.End <= end && a.IsSold == true && a.Tag == itemTag).OrderByDescending(a => a.End).ExecuteAsync();
-            IEnumerable<SaveAuction> withFilter = AddFilter(query, baseData);
-            var result = withFilter.Take(12).ToList();
-            return result;
+            result.Add(auction);
         }
+
+        return result;
     }
 
     private IEnumerable<SaveAuction> AddFilter(Dictionary<string, string> query, IEnumerable<CassandraAuction> baseData)
@@ -124,11 +215,12 @@ public class QueryService
 
     private async Task<QueryArchive> AggregateDay(string tag, Dictionary<string, string> query, string key, DateTime end)
     {
-        var table = scyllaService.AuctionsTable;
         var start = end.AddDays(-1);
-        var timeKey = ScyllaService.GetWeekOrDaysSinceStart(tag, end);
-        var baseData = await table.Where(a => a.End > start && a.End <= end && a.IsSold == true && a.Tag == tag && a.TimeKey == timeKey).ExecuteAsync();
-        var result = AddFilter(query, baseData).ToList();
+        var result = new List<SaveAuction>();
+        await foreach (var auction in GetFiltered(tag, query, start, end, int.MaxValue))
+        {
+            result.Add(auction);
+        }
         var prices = result.Select(a => a.HighestBidAmount).ToList();
         var sumary = new QueryArchive
         {
