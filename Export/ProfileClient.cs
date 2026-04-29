@@ -9,6 +9,7 @@ using Newtonsoft.Json;
 using Cassandra;
 using Microsoft.Extensions.Logging;
 using Coflnet.Sky.Core;
+using Newtonsoft.Json.Serialization;
 
 namespace Coflnet.Sky.Auctions.Services;
 
@@ -17,6 +18,22 @@ public class ProfileClient
     private RestClient profileClient = null;
     private IPricesApi pricesApi;
     private ILogger<ProfileClient> logger;
+
+    private static readonly JsonSerializerSettings LenientSettings = new()
+    {
+        ContractResolver = new DropRequiredContractResolver()
+    };
+
+    private class DropRequiredContractResolver : DefaultContractResolver
+    {
+        protected override JsonProperty CreateProperty(System.Reflection.MemberInfo member, MemberSerialization memberSerialization)
+        {
+            var property = base.CreateProperty(member, memberSerialization);
+            // Skip required-property enforcement so optional/locked fields (e.g. wardrobe slots) don't fail deserialization.
+            property.Required = Required.Default;
+            return property;
+        }
+    }
     public ProfileClient(IConfiguration config, IPricesApi pricesApi, ILogger<ProfileClient> logger)
     {
         profileClient = new RestClient(config["PROFILE_BASE_URL"]);
@@ -64,7 +81,7 @@ public class ProfileClient
             var toUseProfileId = useLast ? "latest" : profile;
             var skyBlockProfileRequest = new RestRequest($"api/profile/{playerId}/{toUseProfileId}", Method.Get);
             var skyBlockProfileResponse = await profileClient.ExecuteAsync(skyBlockProfileRequest);
-            var deserialized = JsonConvert.DeserializeObject<Api.Client.Model.Member>(skyBlockProfileResponse.Content);
+            var deserialized = JsonConvert.DeserializeObject<Api.Client.Model.Member>(skyBlockProfileResponse.Content, LenientSettings);
             var items = await pricesApi.ApiProfileItemsPostAsync(deserialized);
             if (items == null)
             {
