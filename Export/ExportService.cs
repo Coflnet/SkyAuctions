@@ -12,6 +12,8 @@ using Coflnet.Sky.Core;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Newtonsoft.Json;
+using RestSharp;
 
 namespace Coflnet.Sky.Auctions.Services;
 
@@ -96,6 +98,14 @@ public class ExportService : BackgroundService
                 request.Error = e.Message.Truncate(1024);
                 request.CompletedAt = DateTime.UtcNow;
                 await Save(request);
+                try
+                {
+                    await SendExportFailureToDiscord(request, e);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "Failed to send export failure webhook");
+                }
             }
         }
     }
@@ -175,6 +185,15 @@ public class ExportService : BackgroundService
         await Save(request);
 
         logger.LogInformation("Completed export job {JobId}: {Rows} rows", request.JobId, rowCount);
+
+        try
+        {
+            await SendExportSuccessToDiscord(request);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to send export success webhook");
+        }
     }
 
     public async Task<ExportRequest> RequestExport(ExportRequest request)
@@ -214,6 +233,15 @@ public class ExportService : BackgroundService
         await Save(request);
         knownJobs[request.JobId] = request;
         pendingJobs.Enqueue(request.JobId);
+
+        try
+        {
+            await SendExportQueuedToDiscord(request);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to send export queued webhook");
+        }
 
         return request;
     }
@@ -308,6 +336,59 @@ public class ExportService : BackgroundService
     }
 
     private static string NormalizeEmail(string email) => (email ?? string.Empty).Trim().ToLowerInvariant();
+
+    private async Task SendDiscordWebhook(string webhookUrl, string content, string context)
+    {
+        if (string.IsNullOrWhiteSpace(webhookUrl))
+            return;
+        var client = new RestClient();
+        var webhookRequest = new RestRequest(webhookUrl, Method.Post);
+        var payloadJson = JsonConvert.SerializeObject(new { content });
+        webhookRequest.AddParameter("payload_json", payloadJson, ParameterType.RequestBody);
+        var response = await client.ExecuteAsync(webhookRequest);
+        if (!response.IsSuccessful)
+        {
+            logger.LogError(
+                "Failed to send {Context} webhook: {Status} {Error}",
+                context,
+                response.StatusCode,
+                response.ErrorMessage);
+        }
+    }
+
+    private Task SendExportQueuedToDiscord(ExportRequest request)
+    {
+        var content = $"Export request for {request.ItemTag} queued\nUser: {request.ByEmail}\nJob: {request.JobId}";
+        return SendDiscordWebhook(request.DiscordWebhookUrl, content, "queued");
+    }
+
+    private Task SendExportSuccessToDiscord(ExportRequest request)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"Export finished for {request.ItemTag}");
+        sb.AppendLine($"User: {request.ByEmail}");
+        sb.AppendLine($"Status: {request.Status}");
+        sb.AppendLine($"Rows: {request.RowCount}");
+        if (!string.IsNullOrEmpty(request.SignedUrl))
+            sb.AppendLine($"Download: {request.SignedUrl}");
+        return SendDiscordWebhook(request.DiscordWebhookUrl, sb.ToString(), "success");
+    }
+
+    private Task SendExportFailureToDiscord(ExportRequest request, Exception e)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"Export failed for {request.ItemTag}");
+        sb.AppendLine($"User: {request.ByEmail}");
+        sb.AppendLine($"Status: {request.Status}");
+        sb.AppendLine($"Error: {e.Message}");
+        if (!string.IsNullOrEmpty(e.StackTrace))
+        {
+            var firstLine = e.StackTrace.Split('\n').FirstOrDefault()?.Trim();
+            if (!string.IsNullOrEmpty(firstLine))
+                sb.AppendLine($"Trace: {firstLine}");
+        }
+        return SendDiscordWebhook(request.DiscordWebhookUrl, sb.ToString(), "failure");
+    }
 
     private static bool MatchesUserFilter(SaveAuction auction, HashSet<string> users)
     {
