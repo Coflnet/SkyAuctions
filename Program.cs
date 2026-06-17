@@ -1,3 +1,4 @@
+using Coflnet.Core;
 using Coflnet.Security.OpenBao;
 using Coflnet.Sky.Core;
 using Microsoft.AspNetCore.Hosting;
@@ -17,7 +18,13 @@ public class Program
 
     public static IHostBuilder CreateHostBuilder(string[] args) =>
         Host.CreateDefaultBuilder(args)
-                .ConfigureAppConfiguration((_, config) => config.AddOpenBaoFromEnvironment())
+            .ConfigureAppConfiguration((_, config) => config.AddOpenBaoFromEnvironment())
+            .ConfigureLogging((context, logging) =>
+            {
+                logging.AddOpenTelemetryLogging(
+                    context.Configuration,
+                    context.Configuration["JAEGER_SERVICE_NAME"] ?? "sky-auctions");
+            })
             .ConfigureWebHostDefaults(webBuilder =>
             {
                 webBuilder.UseStartup<Startup>();
