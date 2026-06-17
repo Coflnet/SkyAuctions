@@ -188,9 +188,9 @@ public class S3RealDataDryRunTest
         Console.WriteLine($"\n[{sw.Elapsed:mm\\:ss}] === PHASE 2: MariaDB ===");
 
         // Override HypixelContext connection string directly
-        HypixelContext.DbContextId = GetEnvironmentValue(
+        Environment.SetEnvironmentVariable("DBConnection", GetEnvironmentValue(
             "server=localhost;port=3306;user=root;password=takenfrombitnami;database=test;default command timeout=300",
-            "SKYAUCTIONS_TEST_MARIADB_CONNECTION");
+            "SKYAUCTIONS_TEST_MARIADB_CONNECTION"));
 
         // Binary search for starting ID to avoid expensive full-scan query
         int startId;

@@ -158,9 +158,9 @@ public class S3ExistingBucketVerificationTest
 
     private async Task LoadMariaDbExpectations(HashSet<long> expectedAuctionIds, List<(string Uuid, string Tag, DateTime Month)> sampleAuctions, DateTime twoYearsAgo, CancellationToken ct, Stopwatch sw)
     {
-        HypixelContext.DbContextId = GetEnvironmentValue(
+        Environment.SetEnvironmentVariable("DBConnection", GetEnvironmentValue(
             "server=localhost;port=3306;user=root;password=takenfrombitnami;database=test;default command timeout=300",
-            "SKYAUCTIONS_TEST_MARIADB_CONNECTION");
+            "SKYAUCTIONS_TEST_MARIADB_CONNECTION"));
 
         var startId = await FindMariaDbStartId(twoYearsAgo, ct);
         var lastId = startId - 1;

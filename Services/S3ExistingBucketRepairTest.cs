@@ -215,9 +215,9 @@ public class S3ExistingBucketRepairTest
 
     private async Task<MissingMariaReport> FindMissingMariaIds(ConcurrentDictionary<long, byte> archiveIds, DateTime twoYearsAgo, CancellationToken ct, Stopwatch sw)
     {
-        HypixelContext.DbContextId = GetEnvironmentValue(
+        Environment.SetEnvironmentVariable("DBConnection", GetEnvironmentValue(
             "server=localhost;port=3306;user=root;password=takenfrombitnami;database=test;default command timeout=300",
-            "SKYAUCTIONS_TEST_MARIADB_CONNECTION");
+            "SKYAUCTIONS_TEST_MARIADB_CONNECTION"));
 
         var startId = await FindMariaDbStartId(twoYearsAgo, ct);
         var lastId = startId - 1;
@@ -408,9 +408,9 @@ public class S3ExistingBucketRepairTest
             return;
         }
 
-        HypixelContext.DbContextId = GetEnvironmentValue(
+        Environment.SetEnvironmentVariable("DBConnection", GetEnvironmentValue(
             "server=localhost;port=3306;user=root;password=takenfrombitnami;database=test;default command timeout=300",
-            "SKYAUCTIONS_TEST_MARIADB_CONNECTION");
+            "SKYAUCTIONS_TEST_MARIADB_CONNECTION"));
 
         const int fetchBatchSize = 1000;
         var repairedAuctions = 0;
