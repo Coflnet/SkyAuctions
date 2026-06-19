@@ -131,7 +131,9 @@ public class Startup
         services.AddSingleton<IPricesApi>(s => new PricesApi(Configuration["Api_BASE_URL"]));
         
         // S3 Storage for archived auctions (Cloudflare R2)
-        if (Configuration.GetValue<bool>("S3:ENABLED"))
+        var s3Enabled = Configuration.GetValue<bool>("S3:ENABLED");
+        Console.WriteLine($"[Startup] S3:ENABLED = {s3Enabled}");
+        if (s3Enabled)
         {
             services.AddSingleton<IAmazonS3>(p =>
             {

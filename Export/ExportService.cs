@@ -114,6 +114,10 @@ public class ExportService : BackgroundService
     {
         if (s3 == null)
         {
+            // Defense-in-depth: also check the config in case the DI registration
+            // didn't pick up S3:ENABLED due to config-source ordering issues.
+            var s3Enabled = config.GetValue<bool>("S3:ENABLED");
+            logger.LogWarning("S3StorageService is null but S3:ENABLED config is {S3Enabled}", s3Enabled);
             throw new CoflnetException("export_storage_disabled", "S3 export storage is not enabled");
         }
 
