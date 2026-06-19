@@ -136,12 +136,6 @@ public class ExportService : BackgroundService
             throw new CoflnetException("invalid_time_range", "End has to be after start");
         }
 
-        var maxAgeStart = DateTime.UtcNow.AddDays(-14);
-        if (request.Start < maxAgeStart)
-        {
-            throw new CoflnetException("start_too_old", "Exports currently support at most the last 14 days");
-        }
-
         if (request.End > DateTime.UtcNow.AddMinutes(5))
         {
             throw new CoflnetException("end_in_future", "End time may not be in the future");
