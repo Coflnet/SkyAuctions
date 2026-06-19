@@ -77,36 +77,19 @@ public class QueryService
         var endKey = ScyllaService.GetWeekOrDaysSinceStart(itemTag, end);
         var startKey = ScyllaService.GetWeekOrDaysSinceStart(itemTag, start);
         var returnCount = 0;
-        var scyllaCutoff = DateTime.UtcNow.AddMonths(-monthsInScylla);
         var s3MonthCache = new Dictionary<DateTime, IReadOnlyList<CassandraAuction>>();
         var servedS3Months = new HashSet<DateTime>();
 
         // reverse from end to start
         foreach (var key in Enumerable.Range(startKey, endKey - startKey + 1).Reverse())
         {
-            // Determine if this time range is in ScyllaDB or S3
             var keyDate = GetDateFromTimeKey(itemTag, key);
 
             IEnumerable<CassandraAuction> baseData;
-            if (keyDate >= scyllaCutoff)
+            if (s3Storage != null)
             {
-                // Data is in ScyllaDB
-                var scyllaList = (await table.Where(a => a.End > start && a.End <= end && a.IsSold && a.Tag == itemTag && a.TimeKey == key).ExecuteAsync()).ToList();
-                baseData = scyllaList;
-                // Shadow compare against S3 (passive) - only useful when archive has been backfilled for that month
-                if (shadowRead != null && shadowRead.IsEnabled)
-                {
-                    shadowRead.CompareTagMonth("filter", itemTag, keyDate, scyllaList.Select(ScyllaService.CassandraToOld).ToList());
-                }
-            }
-            else if (s3Storage != null)
-            {
-                // Data should be in S3
+                // S3-first: try the archive, fall back to ScyllaDB if the month hasn't been backfilled yet
                 var month = new DateTime(keyDate.Year, keyDate.Month, 1, 0, 0, 0, DateTimeKind.Utc);
-                if (!servedS3Months.Add(month))
-                {
-                    continue;
-                }
 
                 if (!s3MonthCache.TryGetValue(month, out var cachedMonth))
                 {
@@ -114,11 +97,22 @@ public class QueryService
                     s3MonthCache[month] = cachedMonth;
                 }
 
-                baseData = cachedMonth;
+                if (cachedMonth.Count > 0)
+                {
+                    // S3 had data — one fetch covers all time keys in this month
+                    if (!servedS3Months.Add(month))
+                        continue;
+                    baseData = cachedMonth;
+                }
+                else
+                {
+                    // S3 returned nothing for this month (not yet backfilled) — fall back to ScyllaDB
+                    baseData = await table.Where(a => a.End > start && a.End <= end && a.IsSold && a.Tag == itemTag && a.TimeKey == key).ExecuteAsync();
+                }
             }
             else
             {
-                // No S3 storage configured, try ScyllaDB anyway
+                // No S3 storage configured — ScyllaDB only
                 baseData = await table.Where(a => a.End > start && a.End <= end && a.IsSold && a.Tag == itemTag && a.TimeKey == key).ExecuteAsync();
             }
 
