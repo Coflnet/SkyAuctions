@@ -153,7 +153,8 @@ public class S3StorageService
         var s3Config = new AmazonS3Config
         {
             ServiceURL = config["S3:SERVICE_URL"] ?? config["S3:Endpoint"] ?? "http://localhost:9000",
-            ForcePathStyle = true
+            ForcePathStyle = true,
+            SignatureVersion = "4" // Cloudflare R2 requires SigV4; also the modern standard
         };
 
         return new AmazonS3Client(

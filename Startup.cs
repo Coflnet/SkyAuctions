@@ -140,7 +140,8 @@ public class Startup
                 var config = new AmazonS3Config
                 {
                     ServiceURL = Configuration["S3:SERVICE_URL"],
-                    ForcePathStyle = true // Required for R2 and most S3-compatible services
+                    ForcePathStyle = true, // Required for R2 and most S3-compatible services
+                    SignatureVersion = "4" // Cloudflare R2 requires SigV4
                 };
                 return new AmazonS3Client(
                     Configuration["S3:ACCESS_KEY"],
