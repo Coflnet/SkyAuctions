@@ -154,7 +154,8 @@ public class S3StorageService
         {
             ServiceURL = config["S3:SERVICE_URL"] ?? config["S3:Endpoint"] ?? "http://localhost:9000",
             ForcePathStyle = true,
-            SignatureVersion = "4" // Cloudflare R2 requires SigV4; also the modern standard
+            SignatureVersion = "4", // Cloudflare R2 requires SigV4; also the modern standard
+            AuthenticationRegion = config["S3:REGION"] ?? "auto" // Required for SigV4 presigned URLs with custom endpoints like R2
         };
 
         return new AmazonS3Client(
