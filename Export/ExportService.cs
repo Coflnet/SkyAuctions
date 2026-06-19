@@ -23,6 +23,7 @@ public class ExportService : BackgroundService
     private readonly QueryService queryService;
     private readonly S3StorageService s3;
     private readonly ILogger<ExportService> logger;
+    private readonly IConfiguration config;
     private readonly ConcurrentQueue<Guid> pendingJobs = new();
     private readonly ConcurrentDictionary<Guid, ExportRequest> knownJobs = new();
     private readonly TimeSpan signedUrlDuration;
@@ -50,6 +51,7 @@ public class ExportService : BackgroundService
         this.queryService = queryService;
         this.s3 = s3;
         this.logger = logger;
+        this.config = config;
 
         var signedMinutes = int.TryParse(config["S3:ExportSignedUrlMinutes"], out var minutes) ? minutes : 60 * 24;
         signedUrlDuration = TimeSpan.FromMinutes(Math.Max(5, signedMinutes));
