@@ -33,13 +33,37 @@ public class S3StorageService
 
     public async Task EnsureBucket(CancellationToken ct = default)
     {
+        // Step 1 – check if the bucket already exists
+        try
+        {
+            await client.GetBucketLocationAsync(bucketName, ct);
+            logger.LogInformation("Bucket '{BucketName}' exists", bucketName);
+            return;
+        }
+        catch (AmazonS3Exception e) when (e.ErrorCode == "NoSuchBucket")
+        {
+            logger.LogInformation(e, "Bucket '{BucketName}' not found, attempting to create it", bucketName);
+        }
+
+        // Step 2 – create the bucket (works for MinIO / localstack; R2 will reject this)
         try
         {
             await client.PutBucketAsync(new PutBucketRequest { BucketName = bucketName }, ct);
+            logger.LogInformation("Bucket '{BucketName}' created successfully", bucketName);
         }
         catch (AmazonS3Exception e) when (e.ErrorCode == "BucketAlreadyOwnedByYou" || e.ErrorCode == "BucketAlreadyExists")
         {
-            // bucket exists, nothing to do
+            logger.LogInformation("Bucket '{BucketName}' already exists (created concurrently)", bucketName);
+        }
+        catch (Exception e) when (e is not OutOfMemoryException)
+        {
+            // Provider may not support bucket creation via S3 API (e.g. Cloudflare R2)
+            // or the credentials lack CreateBucket permission.
+            // Log a warning but don't crash — the bucket must be created externally.
+            logger.LogWarning(e,
+                "Could not create bucket '{BucketName}'. It may need to be created "
+                + "manually in your provider's dashboard (Cloudflare R2, AWS Console, etc.)",
+                bucketName);
         }
     }
 
