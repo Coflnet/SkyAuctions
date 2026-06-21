@@ -132,7 +132,7 @@ public class S3PlayerIndexService
 
     private static byte[] SerializeEntries(List<PlayerParticipationEntry> entries)
     {
-        using var ms = new MemoryStream();
+        using var ms = new DiskBackedStream();
         using (var gz = new GZipStream(ms, CompressionLevel.Optimal, leaveOpen: true))
         using (var sw = new StreamWriter(gz))
         using (var jw = new JsonTextWriter(sw))
