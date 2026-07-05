@@ -7,6 +7,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Coflnet.Sky.Auctions.Models;
+using Coflnet.Sky.Core;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 
