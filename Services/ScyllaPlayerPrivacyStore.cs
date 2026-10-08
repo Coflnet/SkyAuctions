@@ -78,12 +78,6 @@ public class ScyllaPlayerPrivacyStore : IPlayerPrivacyStore
         return (await scylla.AuctionsTable.Where(a => a.AuctionUid == uid).ExecuteAsync()).ToList();
     }
 
-    public async Task<ScyllaAuction> GetAuction(AuctionRowKey key, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-        return (await scylla.AuctionsTable.Where(a => a.Tag == key.Tag && a.TimeKey == key.TimeKey && a.IsSold == key.IsSold && a.End == key.End && a.AuctionUid == key.AuctionUid)
-            .ExecuteAsync()).FirstOrDefault();
-    }
 
     public Task UpdateAuctionIdentity(ScyllaAuction row, CancellationToken ct)
     {

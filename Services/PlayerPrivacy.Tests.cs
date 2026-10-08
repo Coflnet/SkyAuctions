@@ -355,7 +355,6 @@ public class PlayerPrivacyTests
             finally { Interlocked.Decrement(ref InFlight); }
             return Auctions.Where(a => a.Uuid == auctionUuid).ToList();
         }
-        public Task<ScyllaAuction> GetAuction(AuctionRowKey key, CancellationToken ct) => Task.FromResult(Auctions.FirstOrDefault(a => AuctionRowKey.From(a) == key));
         public Task UpdateAuctionIdentity(ScyllaAuction row, CancellationToken ct) { lock (Writes) Writes.Add("update " + row.AuctionUid); return Task.CompletedTask; }
         public Task DeleteBids(Guid player, CancellationToken ct) { lock (Writes) Writes.Add("deleteBids"); Bids.RemoveAll(b => b.BidderUuid == player); return Task.CompletedTask; }
         public Task<Dictionary<int, List<PlayerParticipationEntry>>> GetS3Participation(Guid player, CancellationToken ct) => Task.FromResult(new Dictionary<int, List<PlayerParticipationEntry>> { [2024] = new() });
@@ -539,7 +538,7 @@ public class PlayerPrivacyTests
         var export = await service.Export(OptedOut);
         var foreign = store.Auctions.First(a => a.AuctionUid == 3);
         export.Auctions.Add(new ExportedAuction { Tag = foreign.Tag, TimeKey = foreign.TimeKey, IsSold = foreign.IsSold, End = foreign.End, AuctionUid = foreign.AuctionUid, Uuid = foreign.Uuid });
-        AssertRejectedWithoutWrites(() => service.Erase(OptedOut, export), store, 400);
+        AssertRejectedWithoutWrites(() => service.Erase(OptedOut, export), store, 409);
     }
 
     [Test]

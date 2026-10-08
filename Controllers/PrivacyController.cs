@@ -56,6 +56,12 @@ public class PrivacyController : ControllerBase
         {
             return StatusCode(e.StatusCode, e.Message);
         }
+        catch (Exception e)
+        {
+            // the service's ILogger output only goes to the OTLP exporter, keep failures of this operator endpoint visible
+            Console.WriteLine($"privacy: erase of {player:N} failed: {e}");
+            throw;
+        }
     }
 
     private static bool TryParse(string uuid, out Guid player) => Guid.TryParse(uuid?.Replace("-", ""), out player);

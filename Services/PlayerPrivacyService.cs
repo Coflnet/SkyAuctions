@@ -79,7 +79,6 @@ public interface IPlayerPrivacyStore
     Task<List<CassandraBid>> GetBids(Guid player, CancellationToken ct);
     Task<List<ScyllaAuction>> GetAuctionsBySeller(Guid player, CancellationToken ct);
     Task<List<ScyllaAuction>> GetAuctionsByAuctionUuid(Guid auctionUuid, CancellationToken ct);
-    Task<ScyllaAuction> GetAuction(AuctionRowKey key, CancellationToken ct);
     /// <summary>Rewrites only the identity columns of the row</summary>
     Task UpdateAuctionIdentity(ScyllaAuction row, CancellationToken ct);
     Task DeleteBids(Guid player, CancellationToken ct);
@@ -155,18 +154,8 @@ public class PlayerPrivacyService
 
         var total = Stopwatch.StartNew();
         var sw = Stopwatch.StartNew();
-        // every listed auction has to involve the player in the live row
-        var lives = await MapBounded(bodyAuctions, (auction, token) => store.GetAuction(auction.Key, token), ct);
-        for (var i = 0; i < bodyAuctions.Count; i++)
-        {
-            if (lives[i] == null)
-                throw new PrivacyException(409, "An exported auction no longer exists, create a fresh export");
-            if (!Involves(lives[i], player))
-                throw new PrivacyException(400, $"Auction {bodyAuctions[i].Uuid} does not involve the player");
-        }
-        Log("Privacy erase {Player}: {Count} exported auctions validated in {Elapsed}ms", player, bodyAuctions.Count, sw.ElapsedMilliseconds);
-
-        // scope check, the lookups are repeated and have to match the export
+        // scope check: the lookups are repeated and have to match the export exactly. The live lookups only return rows naming
+        // the player, so a body listing a foreign, missing or changed auction can't match and is rejected before any write
         sw.Restart();
         var liveBids = await store.GetBids(player, ct);
         Log("Privacy erase {Player}: {Count} bids reloaded in {Elapsed}ms", player, liveBids.Count, sw.ElapsedMilliseconds);
