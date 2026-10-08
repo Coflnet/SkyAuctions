@@ -20,6 +20,13 @@ public class ScyllaPlayerPrivacyStore : IPlayerPrivacyStore
 
     private readonly ILogger logger;
 
+    // the service's ILogger output only goes to the OTLP exporter, mirror it to the console like the rest of the service
+    private void Log(string template, params object[] args)
+    {
+        logger?.LogInformation(template, args);
+        Console.WriteLine("privacy: " + template + " | " + string.Join(", ", args));
+    }
+
     public ScyllaPlayerPrivacyStore(ScyllaService scylla, S3StorageService s3 = null, S3PlayerIndexService playerIndex = null, ILogger logger = null)
     {
         this.logger = logger;
@@ -29,7 +36,7 @@ public class ScyllaPlayerPrivacyStore : IPlayerPrivacyStore
     }
 
     /// <summary>Rows per page of the secondary index scans</summary>
-    public const int IndexPageSize = 500;
+    public const int IndexPageSize = 100;
 
     public async Task<List<CassandraBid>> GetBids(Guid player, CancellationToken ct)
     {
@@ -56,11 +63,13 @@ public class ScyllaPlayerPrivacyStore : IPlayerPrivacyStore
             var page = await query.ExecutePagedAsync();
             pages++;
             result.AddRange(page);
+            if (pages % 5 == 0)
+                Log("Privacy index query progress {Rows} rows, {Pages} pages, {Elapsed}ms", result.Count, pages, sw.ElapsedMilliseconds);
             if (page.PagingState == null)
                 break;
             query.SetPagingState(page.PagingState);
         }
-        logger?.LogInformation("Privacy index query read {Rows} rows in {Pages} pages, {Elapsed}ms", result.Count, pages, sw.ElapsedMilliseconds);
+        Log("Privacy index query read {Rows} rows in {Pages} pages, {Elapsed}ms", result.Count, pages, sw.ElapsedMilliseconds);
         return result;
     }
 

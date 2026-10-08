@@ -105,6 +105,13 @@ public class PlayerPrivacyService
     private readonly IPlayerPrivacyStore store;
     private readonly ILogger<PlayerPrivacyService> logger;
 
+    // the service's ILogger output only goes to the OTLP exporter, mirror it to the console like the rest of the service
+    private void Log(string template, params object[] args)
+    {
+        logger?.LogInformation(template, args);
+        Console.WriteLine("privacy: " + template + " | " + string.Join(", ", args));
+    }
+
     public PlayerPrivacyService(IPlayerPrivacyStore store, ILogger<PlayerPrivacyService> logger)
     {
         this.store = store;
@@ -116,12 +123,12 @@ public class PlayerPrivacyService
         var total = Stopwatch.StartNew();
         var sw = Stopwatch.StartNew();
         var bids = await store.GetBids(player, ct);
-        logger.LogInformation("Privacy export {Player}: {Count} bids loaded in {Elapsed}ms", player, bids.Count, sw.ElapsedMilliseconds);
+        Log("Privacy export {Player}: {Count} bids loaded in {Elapsed}ms", player, bids.Count, sw.ElapsedMilliseconds);
         var rows = await FindAuctionRows(player, bids, ct);
         sw.Restart();
         var s3 = await store.GetS3Participation(player, ct);
-        logger.LogInformation("Privacy export {Player}: s3 participation {Years} years in {Elapsed}ms", player, s3.Count, sw.ElapsedMilliseconds);
-        logger.LogInformation("Privacy export {Player} done: {Auctions} auctions in {Elapsed}ms", player, rows.Count, total.ElapsedMilliseconds);
+        Log("Privacy export {Player}: s3 participation {Years} years in {Elapsed}ms", player, s3.Count, sw.ElapsedMilliseconds);
+        Log("Privacy export {Player} done: {Auctions} auctions in {Elapsed}ms", player, rows.Count, total.ElapsedMilliseconds);
         return new PlayerExport
         {
             PlayerUuid = player.ToString("N"),
@@ -158,12 +165,12 @@ public class PlayerPrivacyService
             if (!Involves(lives[i], player))
                 throw new PrivacyException(400, $"Auction {bodyAuctions[i].Uuid} does not involve the player");
         }
-        logger.LogInformation("Privacy erase {Player}: {Count} exported auctions validated in {Elapsed}ms", player, bodyAuctions.Count, sw.ElapsedMilliseconds);
+        Log("Privacy erase {Player}: {Count} exported auctions validated in {Elapsed}ms", player, bodyAuctions.Count, sw.ElapsedMilliseconds);
 
         // scope check, the lookups are repeated and have to match the export
         sw.Restart();
         var liveBids = await store.GetBids(player, ct);
-        logger.LogInformation("Privacy erase {Player}: {Count} bids reloaded in {Elapsed}ms", player, liveBids.Count, sw.ElapsedMilliseconds);
+        Log("Privacy erase {Player}: {Count} bids reloaded in {Elapsed}ms", player, liveBids.Count, sw.ElapsedMilliseconds);
         var liveRows = await FindAuctionRows(player, liveBids, ct);
         var liveBidKeys = liveBids.Select(BidKey).ToHashSet();
         var bodyBidKeys = bodyBids.Select(BidKey).ToHashSet();
@@ -181,16 +188,16 @@ public class PlayerPrivacyService
             }
             return true;
         }, ct);
-        logger.LogInformation("Privacy erase {Player}: {Count} auction rows rewritten in {Elapsed}ms", player, rewritten, sw.ElapsedMilliseconds);
+        Log("Privacy erase {Player}: {Count} auction rows rewritten in {Elapsed}ms", player, rewritten, sw.ElapsedMilliseconds);
         // bids last: the auctions above are found through them
         sw.Restart();
         var s3Deleted = await store.DeleteS3PlayerIndex(player, ct);
-        logger.LogInformation("Privacy erase {Player}: {Count} s3 objects deleted in {Elapsed}ms", player, s3Deleted, sw.ElapsedMilliseconds);
+        Log("Privacy erase {Player}: {Count} s3 objects deleted in {Elapsed}ms", player, s3Deleted, sw.ElapsedMilliseconds);
         sw.Restart();
         if (liveBids.Count > 0)
             await store.DeleteBids(player, ct);
-        logger.LogInformation("Privacy erase {Player}: {Count} bids deleted in {Elapsed}ms", player, liveBids.Count, sw.ElapsedMilliseconds);
-        logger.LogInformation("Erased player {Player}: {Bids} bids, {Auctions} auctions, {S3} s3 objects in {Elapsed}ms", player, liveBids.Count, rewritten, s3Deleted, total.ElapsedMilliseconds);
+        Log("Privacy erase {Player}: {Count} bids deleted in {Elapsed}ms", player, liveBids.Count, sw.ElapsedMilliseconds);
+        Log("Erased player {Player}: {Bids} bids, {Auctions} auctions, {S3} s3 objects in {Elapsed}ms", player, liveBids.Count, rewritten, s3Deleted, total.ElapsedMilliseconds);
         return new PlayerEraseResult { BidsDeleted = liveBids.Count, AuctionsRewritten = rewritten, S3PlayerIndexObjectsDeleted = s3Deleted };
     }
 
@@ -244,13 +251,13 @@ public class PlayerPrivacyService
         var seller = await store.GetAuctionsBySeller(player, ct);
         foreach (var row in seller)
             rows[AuctionRowKey.From(row)] = row;
-        logger.LogInformation("Privacy lookup {Player}: {Count} seller auctions in {Elapsed}ms", player, seller.Count, sw.ElapsedMilliseconds);
+        Log("Privacy lookup {Player}: {Count} seller auctions in {Elapsed}ms", player, seller.Count, sw.ElapsedMilliseconds);
 
         sw.Restart();
         var highest = await store.GetAuctionsByHighestBidder(player, ct);
         foreach (var row in highest)
             rows[AuctionRowKey.From(row)] = row;
-        logger.LogInformation("Privacy lookup {Player}: {Count} highest bidder auctions in {Elapsed}ms", player, highest.Count, sw.ElapsedMilliseconds);
+        Log("Privacy lookup {Player}: {Count} highest bidder auctions in {Elapsed}ms", player, highest.Count, sw.ElapsedMilliseconds);
 
         sw.Restart();
         var auctionUuids = bids.Select(b => b.AuctionUuid).Distinct().ToList();
@@ -258,7 +265,7 @@ public class PlayerPrivacyService
         foreach (var found in viaBids)
             foreach (var row in found)
                 rows[AuctionRowKey.From(row)] = row;
-        logger.LogInformation("Privacy lookup {Player}: {Count} distinct auctions from {Bids} bids in {Elapsed}ms", player, auctionUuids.Count, bids.Count, sw.ElapsedMilliseconds);
+        Log("Privacy lookup {Player}: {Count} distinct auctions from {Bids} bids in {Elapsed}ms", player, auctionUuids.Count, bids.Count, sw.ElapsedMilliseconds);
         return rows;
     }
 
