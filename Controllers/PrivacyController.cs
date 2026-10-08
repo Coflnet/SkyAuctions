@@ -21,7 +21,7 @@ public class PrivacyController : ControllerBase
     /// </summary>
     public PrivacyController(ScyllaService scyllaService, ILoggerFactory loggerFactory, S3StorageService s3 = null, S3PlayerIndexService playerIndex = null)
     {
-        service = new PlayerPrivacyService(new ScyllaPlayerPrivacyStore(scyllaService, s3, playerIndex), loggerFactory.CreateLogger<PlayerPrivacyService>());
+        service = new PlayerPrivacyService(new ScyllaPlayerPrivacyStore(scyllaService, s3, playerIndex, loggerFactory.CreateLogger<ScyllaPlayerPrivacyStore>()), loggerFactory.CreateLogger<PlayerPrivacyService>());
     }
 
     /// <summary>
@@ -30,11 +30,11 @@ public class PrivacyController : ControllerBase
     [HttpGet]
     [ProducesResponseType(typeof(PlayerExport), 200)]
     [ProducesResponseType(400)]
-    public async Task<ActionResult<PlayerExport>> Export(string uuid, CancellationToken ct)
+    public async Task<ActionResult<PlayerExport>> Export(string uuid)
     {
         if (!TryParse(uuid, out var player))
             return BadRequest("Invalid player UUID");
-        return Ok(await service.Export(player, ct));
+        return Ok(await service.Export(player, HttpContext.RequestAborted));
     }
 
     /// <summary>
@@ -44,13 +44,13 @@ public class PrivacyController : ControllerBase
     [ProducesResponseType(typeof(PlayerEraseResult), 200)]
     [ProducesResponseType(400)]
     [ProducesResponseType(409)]
-    public async Task<ActionResult<PlayerEraseResult>> Erase(string uuid, [FromBody] PlayerExport body, CancellationToken ct)
+    public async Task<ActionResult<PlayerEraseResult>> Erase(string uuid, [FromBody] PlayerExport body)
     {
         if (!TryParse(uuid, out var player))
             return BadRequest("Invalid player UUID");
         try
         {
-            return Ok(await service.Erase(player, body, ct));
+            return Ok(await service.Erase(player, body, HttpContext.RequestAborted));
         }
         catch (PrivacyException e)
         {

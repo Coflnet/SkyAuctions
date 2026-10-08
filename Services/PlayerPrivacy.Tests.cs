@@ -327,16 +327,40 @@ public class PlayerPrivacyTests
         public List<ScyllaAuction> Auctions = new();
         public List<string> Writes = new();
         public int S3Objects = 2;
+        public int UuidLookups;
+        public List<Guid> LookedUp = new();
+        public int InFlight;
+        public int MaxInFlight;
+        public int LookupDelayMs;
+        public Action<int> OnLookup;
 
-        public Task<List<CassandraBid>> GetBids(Guid player) => Task.FromResult(Bids.Where(b => b.BidderUuid == player).ToList());
-        public Task<List<ScyllaAuction>> GetAuctionsBySeller(Guid player) => Task.FromResult(Auctions.Where(a => a.Auctioneer == player).ToList());
-        public Task<List<ScyllaAuction>> GetAuctionsByHighestBidder(Guid player) => Task.FromResult(Auctions.Where(a => a.HighestBidder == player).ToList());
-        public Task<List<ScyllaAuction>> GetAuctionsByAuctionUuid(Guid auctionUuid) => Task.FromResult(Auctions.Where(a => a.Uuid == auctionUuid).ToList());
-        public Task<ScyllaAuction> GetAuction(AuctionRowKey key) => Task.FromResult(Auctions.FirstOrDefault(a => AuctionRowKey.From(a) == key));
-        public Task UpdateAuctionIdentity(ScyllaAuction row) { Writes.Add("update " + row.AuctionUid); return Task.CompletedTask; }
-        public Task DeleteBids(Guid player) { Writes.Add("deleteBids"); Bids.RemoveAll(b => b.BidderUuid == player); return Task.CompletedTask; }
+        public Task<List<CassandraBid>> GetBids(Guid player, CancellationToken ct) => Task.FromResult(Bids.Where(b => b.BidderUuid == player).ToList());
+        public Task<List<ScyllaAuction>> GetAuctionsBySeller(Guid player, CancellationToken ct) => Task.FromResult(Auctions.Where(a => a.Auctioneer == player).ToList());
+        public Task<List<ScyllaAuction>> GetAuctionsByHighestBidder(Guid player, CancellationToken ct) => Task.FromResult(Auctions.Where(a => a.HighestBidder == player).ToList());
+        public async Task<List<ScyllaAuction>> GetAuctionsByAuctionUuid(Guid auctionUuid, CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            int count;
+            lock (LookedUp) { LookedUp.Add(auctionUuid); count = ++UuidLookups; }
+            var now = Interlocked.Increment(ref InFlight);
+            int seen;
+            while ((seen = MaxInFlight) < now && Interlocked.CompareExchange(ref MaxInFlight, now, seen) != seen) { }
+            try
+            {
+                OnLookup?.Invoke(count);
+                if (LookupDelayMs > 0)
+                    await Task.Delay(LookupDelayMs, ct);
+                else
+                    await Task.Yield();
+            }
+            finally { Interlocked.Decrement(ref InFlight); }
+            return Auctions.Where(a => a.Uuid == auctionUuid).ToList();
+        }
+        public Task<ScyllaAuction> GetAuction(AuctionRowKey key, CancellationToken ct) => Task.FromResult(Auctions.FirstOrDefault(a => AuctionRowKey.From(a) == key));
+        public Task UpdateAuctionIdentity(ScyllaAuction row, CancellationToken ct) { lock (Writes) Writes.Add("update " + row.AuctionUid); return Task.CompletedTask; }
+        public Task DeleteBids(Guid player, CancellationToken ct) { lock (Writes) Writes.Add("deleteBids"); Bids.RemoveAll(b => b.BidderUuid == player); return Task.CompletedTask; }
         public Task<Dictionary<int, List<PlayerParticipationEntry>>> GetS3Participation(Guid player, CancellationToken ct) => Task.FromResult(new Dictionary<int, List<PlayerParticipationEntry>> { [2024] = new() });
-        public Task<int> DeleteS3PlayerIndex(Guid player, CancellationToken ct) { Writes.Add("deleteS3"); return Task.FromResult(S3Objects); }
+        public Task<int> DeleteS3PlayerIndex(Guid player, CancellationToken ct) { lock (Writes) Writes.Add("deleteS3"); return Task.FromResult(S3Objects); }
     }
 
     private static (PlayerPrivacyService service, FakeStore store) Setup()
@@ -383,6 +407,82 @@ public class PlayerPrivacyTests
         Assert.That(store.Writes, Is.EquivalentTo(new[] { "update 1", "update 2", "deleteS3", "deleteBids" }));
         Assert.That(store.Writes.Last(), Is.EqualTo("deleteBids"));
         Assert.That(store.Auctions.Where(a => PlayerPrivacyService.Involves(a, OptedOut)), Is.Empty);
+    }
+
+    private static void AddManyBids(FakeStore store, int distinctAuctions, int duplicatesEach)
+    {
+        for (var i = 0; i < distinctAuctions; i++)
+        {
+            var row = Row(Other, OptedOut, Bid(OptedOut, 100 + i));
+            row.AuctionUid = 100 + i;
+            store.Auctions.Add(row);
+            for (var d = 0; d < duplicatesEach; d++)
+                store.Bids.Add(new CassandraBid { AuctionUuid = row.Uuid, BidderUuid = OptedOut, Amount = 100 + d, Timestamp = new DateTime(2024, 1, 1, 0, 0, d, DateTimeKind.Utc) });
+        }
+    }
+
+    [Test]
+    public async Task DuplicateAuctionUuidsInBidsAreLookedUpOnce()
+    {
+        var (service, store) = Setup();
+        store.Bids.Clear();
+        AddManyBids(store, 5, 4);
+
+        var export = await service.Export(OptedOut);
+
+        Assert.That(store.Bids, Has.Count.EqualTo(20));
+        Assert.That(store.UuidLookups, Is.EqualTo(5));
+        Assert.That(store.LookedUp.Distinct().Count(), Is.EqualTo(5));
+        Assert.That(export.Auctions.Count(a => a.AuctionUid >= 100), Is.EqualTo(5));
+    }
+
+    [Test]
+    public async Task AuctionLookupsRunConcurrentlyButBounded()
+    {
+        var (service, store) = Setup();
+        store.Bids.Clear();
+        AddManyBids(store, 40, 1);
+        store.LookupDelayMs = 20;
+
+        await service.Export(OptedOut);
+
+        Assert.That(store.UuidLookups, Is.EqualTo(40));
+        Assert.That(store.MaxInFlight, Is.GreaterThan(1));
+        Assert.That(store.MaxInFlight, Is.LessThanOrEqualTo(PlayerPrivacyService.MaxConcurrency));
+    }
+
+    [Test]
+    public async Task EraseWithManyBidsKeepsResultAndBound()
+    {
+        var (service, store) = Setup();
+        store.Bids.Clear();
+        AddManyBids(store, 30, 2);
+        store.LookupDelayMs = 5;
+        var export = await service.Export(OptedOut);
+        store.MaxInFlight = 0;
+
+        var result = await service.Erase(OptedOut, export);
+
+        Assert.That(result.BidsDeleted, Is.EqualTo(60));
+        Assert.That(result.AuctionsRewritten, Is.EqualTo(32));
+        Assert.That(store.MaxInFlight, Is.LessThanOrEqualTo(PlayerPrivacyService.MaxConcurrency));
+        Assert.That(store.Auctions.Where(a => PlayerPrivacyService.Involves(a, OptedOut)), Is.Empty);
+    }
+
+    [Test]
+    public void CancellationStopsFurtherLookups()
+    {
+        var (service, store) = Setup();
+        store.Bids.Clear();
+        AddManyBids(store, 50, 1);
+        store.LookupDelayMs = 20;
+        using var cts = new CancellationTokenSource();
+        store.OnLookup = n => { if (n == 3) cts.Cancel(); };
+
+        Assert.CatchAsync<OperationCanceledException>(() => service.Export(OptedOut, cts.Token));
+
+        Assert.That(store.UuidLookups, Is.LessThan(50));
+        Assert.That(store.UuidLookups, Is.LessThanOrEqualTo(3 + PlayerPrivacyService.MaxConcurrency));
     }
 
     private static void AssertRejectedWithoutWrites(Func<Task> act, FakeStore store, int status)

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -75,14 +76,14 @@ public class PrivacyException : Exception
 /// <summary>Thin data access so the logic can be tested without scylla/s3</summary>
 public interface IPlayerPrivacyStore
 {
-    Task<List<CassandraBid>> GetBids(Guid player);
-    Task<List<ScyllaAuction>> GetAuctionsBySeller(Guid player);
-    Task<List<ScyllaAuction>> GetAuctionsByHighestBidder(Guid player);
-    Task<List<ScyllaAuction>> GetAuctionsByAuctionUuid(Guid auctionUuid);
-    Task<ScyllaAuction> GetAuction(AuctionRowKey key);
+    Task<List<CassandraBid>> GetBids(Guid player, CancellationToken ct);
+    Task<List<ScyllaAuction>> GetAuctionsBySeller(Guid player, CancellationToken ct);
+    Task<List<ScyllaAuction>> GetAuctionsByHighestBidder(Guid player, CancellationToken ct);
+    Task<List<ScyllaAuction>> GetAuctionsByAuctionUuid(Guid auctionUuid, CancellationToken ct);
+    Task<ScyllaAuction> GetAuction(AuctionRowKey key, CancellationToken ct);
     /// <summary>Rewrites only the identity columns of the row</summary>
-    Task UpdateAuctionIdentity(ScyllaAuction row);
-    Task DeleteBids(Guid player);
+    Task UpdateAuctionIdentity(ScyllaAuction row, CancellationToken ct);
+    Task DeleteBids(Guid player, CancellationToken ct);
     /// <summary>Participation entries per year, empty when S3 is not enabled</summary>
     Task<Dictionary<int, List<PlayerParticipationEntry>>> GetS3Participation(Guid player, CancellationToken ct);
     /// <summary>Deletes all player index objects, returns how many</summary>
@@ -98,6 +99,9 @@ public class PlayerPrivacyService
     public const string NotCoveredNote = "Auctions where the player is only a coop member are not included because finding them would need a full table scan; "
         + "coop-only auctions are scrubbed lazily at read time. S3 auction archive blobs are scrubbed lazily the next time they are read or written.";
 
+    /// <summary>Maximum number of per auction queries in flight at once</summary>
+    public const int MaxConcurrency = 8;
+
     private readonly IPlayerPrivacyStore store;
     private readonly ILogger<PlayerPrivacyService> logger;
 
@@ -109,9 +113,15 @@ public class PlayerPrivacyService
 
     public async Task<PlayerExport> Export(Guid player, CancellationToken ct = default)
     {
-        var bids = await store.GetBids(player);
-        var rows = await FindAuctionRows(player, bids);
+        var total = Stopwatch.StartNew();
+        var sw = Stopwatch.StartNew();
+        var bids = await store.GetBids(player, ct);
+        logger.LogInformation("Privacy export {Player}: {Count} bids loaded in {Elapsed}ms", player, bids.Count, sw.ElapsedMilliseconds);
+        var rows = await FindAuctionRows(player, bids, ct);
+        sw.Restart();
         var s3 = await store.GetS3Participation(player, ct);
+        logger.LogInformation("Privacy export {Player}: s3 participation {Years} years in {Elapsed}ms", player, s3.Count, sw.ElapsedMilliseconds);
+        logger.LogInformation("Privacy export {Player} done: {Auctions} auctions in {Elapsed}ms", player, rows.Count, total.ElapsedMilliseconds);
         return new PlayerExport
         {
             PlayerUuid = player.ToString("N"),
@@ -137,53 +147,118 @@ public class PlayerPrivacyService
         if (!PlayerOptOut.IsOptedOut(player))
             throw new PrivacyException(409, "The player has not opted out");
 
+        var total = Stopwatch.StartNew();
+        var sw = Stopwatch.StartNew();
         // every listed auction has to involve the player in the live row
-        foreach (var auction in bodyAuctions)
+        var lives = await MapBounded(bodyAuctions, (auction, token) => store.GetAuction(auction.Key, token), ct);
+        for (var i = 0; i < bodyAuctions.Count; i++)
         {
-            var live = await store.GetAuction(auction.Key);
-            if (live == null)
+            if (lives[i] == null)
                 throw new PrivacyException(409, "An exported auction no longer exists, create a fresh export");
-            if (!Involves(live, player))
-                throw new PrivacyException(400, $"Auction {auction.Uuid} does not involve the player");
+            if (!Involves(lives[i], player))
+                throw new PrivacyException(400, $"Auction {bodyAuctions[i].Uuid} does not involve the player");
         }
+        logger.LogInformation("Privacy erase {Player}: {Count} exported auctions validated in {Elapsed}ms", player, bodyAuctions.Count, sw.ElapsedMilliseconds);
 
         // scope check, the lookups are repeated and have to match the export
-        var liveBids = await store.GetBids(player);
-        var liveRows = await FindAuctionRows(player, liveBids);
+        sw.Restart();
+        var liveBids = await store.GetBids(player, ct);
+        logger.LogInformation("Privacy erase {Player}: {Count} bids reloaded in {Elapsed}ms", player, liveBids.Count, sw.ElapsedMilliseconds);
+        var liveRows = await FindAuctionRows(player, liveBids, ct);
         var liveBidKeys = liveBids.Select(BidKey).ToHashSet();
         var bodyBidKeys = bodyBids.Select(BidKey).ToHashSet();
         if (!liveBidKeys.SetEquals(bodyBidKeys) || !liveRows.Keys.ToHashSet().SetEquals(bodyAuctions.Select(a => a.Key)))
             throw new PrivacyException(409, "The data changed since the export, create a fresh export");
 
+        sw.Restart();
         var rewritten = 0;
-        foreach (var row in liveRows.Values)
+        await MapBounded(liveRows.Values.ToList(), async (row, token) =>
         {
             if (AnonymizeRow(row, player, NewAnonymousGuid()))
             {
-                await store.UpdateAuctionIdentity(row);
-                rewritten++;
+                await store.UpdateAuctionIdentity(row, token);
+                Interlocked.Increment(ref rewritten);
             }
-        }
+            return true;
+        }, ct);
+        logger.LogInformation("Privacy erase {Player}: {Count} auction rows rewritten in {Elapsed}ms", player, rewritten, sw.ElapsedMilliseconds);
         // bids last: the auctions above are found through them
+        sw.Restart();
         var s3Deleted = await store.DeleteS3PlayerIndex(player, ct);
+        logger.LogInformation("Privacy erase {Player}: {Count} s3 objects deleted in {Elapsed}ms", player, s3Deleted, sw.ElapsedMilliseconds);
+        sw.Restart();
         if (liveBids.Count > 0)
-            await store.DeleteBids(player);
-        logger.LogInformation("Erased player {Player}: {Bids} bids, {Auctions} auctions, {S3} s3 objects", player, liveBids.Count, rewritten, s3Deleted);
+            await store.DeleteBids(player, ct);
+        logger.LogInformation("Privacy erase {Player}: {Count} bids deleted in {Elapsed}ms", player, liveBids.Count, sw.ElapsedMilliseconds);
+        logger.LogInformation("Erased player {Player}: {Bids} bids, {Auctions} auctions, {S3} s3 objects in {Elapsed}ms", player, liveBids.Count, rewritten, s3Deleted, total.ElapsedMilliseconds);
         return new PlayerEraseResult { BidsDeleted = liveBids.Count, AuctionsRewritten = rewritten, S3PlayerIndexObjectsDeleted = s3Deleted };
+    }
+
+    /// <summary>
+    /// Runs <paramref name="work"/> for every item with at most <see cref="MaxConcurrency"/> in flight, results keep the input order.
+    /// The first failure or cancellation stops queued items from starting.
+    /// </summary>
+    private static async Task<TResult[]> MapBounded<TIn, TResult>(IReadOnlyList<TIn> items, Func<TIn, CancellationToken, Task<TResult>> work, CancellationToken ct)
+    {
+        using var gate = new SemaphoreSlim(MaxConcurrency);
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var token = cts.Token;
+        var tasks = items.Select(async item =>
+        {
+            await gate.WaitAsync(token);
+            try
+            {
+                token.ThrowIfCancellationRequested();
+                return await work(item, token);
+            }
+            catch
+            {
+                cts.Cancel();
+                throw;
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }).ToList();
+        try
+        {
+            return await Task.WhenAll(tasks);
+        }
+        catch
+        {
+            // surface the original failure instead of a follow-up cancellation
+            var first = tasks.FirstOrDefault(t => t.IsFaulted);
+            if (first != null)
+                await first;
+            throw;
+        }
     }
 
     private static (Guid, DateTime) BidKey(CassandraBid bid) => (bid.AuctionUuid, new DateTime(bid.Timestamp.ToUniversalTime().Ticks / TimeSpan.TicksPerMillisecond * TimeSpan.TicksPerMillisecond, DateTimeKind.Utc));
 
-    private async Task<Dictionary<AuctionRowKey, ScyllaAuction>> FindAuctionRows(Guid player, List<CassandraBid> bids)
+    private async Task<Dictionary<AuctionRowKey, ScyllaAuction>> FindAuctionRows(Guid player, List<CassandraBid> bids, CancellationToken ct)
     {
         var rows = new Dictionary<AuctionRowKey, ScyllaAuction>();
-        foreach (var row in await store.GetAuctionsBySeller(player))
+        var sw = Stopwatch.StartNew();
+        var seller = await store.GetAuctionsBySeller(player, ct);
+        foreach (var row in seller)
             rows[AuctionRowKey.From(row)] = row;
-        foreach (var row in await store.GetAuctionsByHighestBidder(player))
+        logger.LogInformation("Privacy lookup {Player}: {Count} seller auctions in {Elapsed}ms", player, seller.Count, sw.ElapsedMilliseconds);
+
+        sw.Restart();
+        var highest = await store.GetAuctionsByHighestBidder(player, ct);
+        foreach (var row in highest)
             rows[AuctionRowKey.From(row)] = row;
-        foreach (var auctionUuid in bids.Select(b => b.AuctionUuid).Distinct())
-            foreach (var row in await store.GetAuctionsByAuctionUuid(auctionUuid))
+        logger.LogInformation("Privacy lookup {Player}: {Count} highest bidder auctions in {Elapsed}ms", player, highest.Count, sw.ElapsedMilliseconds);
+
+        sw.Restart();
+        var auctionUuids = bids.Select(b => b.AuctionUuid).Distinct().ToList();
+        var viaBids = await MapBounded(auctionUuids, (uuid, token) => store.GetAuctionsByAuctionUuid(uuid, token), ct);
+        foreach (var found in viaBids)
+            foreach (var row in found)
                 rows[AuctionRowKey.From(row)] = row;
+        logger.LogInformation("Privacy lookup {Player}: {Count} distinct auctions from {Bids} bids in {Elapsed}ms", player, auctionUuids.Count, bids.Count, sw.ElapsedMilliseconds);
         return rows;
     }
 

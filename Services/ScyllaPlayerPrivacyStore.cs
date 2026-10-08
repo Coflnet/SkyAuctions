@@ -7,6 +7,7 @@ using Cassandra;
 using Cassandra.Data.Linq;
 using Coflnet.Sky.Auctions.Models;
 using Coflnet.Sky.Core;
+using Microsoft.Extensions.Logging;
 
 namespace Coflnet.Sky.Auctions.Services;
 
@@ -17,36 +18,78 @@ public class ScyllaPlayerPrivacyStore : IPlayerPrivacyStore
     private readonly S3StorageService s3;
     private readonly S3PlayerIndexService playerIndex;
 
-    public ScyllaPlayerPrivacyStore(ScyllaService scylla, S3StorageService s3 = null, S3PlayerIndexService playerIndex = null)
+    private readonly ILogger logger;
+
+    public ScyllaPlayerPrivacyStore(ScyllaService scylla, S3StorageService s3 = null, S3PlayerIndexService playerIndex = null, ILogger logger = null)
     {
+        this.logger = logger;
         this.scylla = scylla;
         this.s3 = s3;
         this.playerIndex = playerIndex;
     }
 
-    public async Task<List<CassandraBid>> GetBids(Guid player) =>
-        (await scylla.GetBidsTableInstance().Where(b => b.BidderUuid == player).ExecuteAsync()).ToList();
+    /// <summary>Rows per page of the secondary index scans</summary>
+    public const int IndexPageSize = 500;
 
-    public async Task<List<ScyllaAuction>> GetAuctionsBySeller(Guid player) =>
-        (await scylla.AuctionsTable.Where(a => a.Auctioneer == player).AllowFiltering().ExecuteAsync()).ToList();
-
-    public async Task<List<ScyllaAuction>> GetAuctionsByHighestBidder(Guid player) =>
-        (await scylla.AuctionsTable.Where(a => a.HighestBidder == player).AllowFiltering().ExecuteAsync()).ToList();
-
-    public async Task<List<ScyllaAuction>> GetAuctionsByAuctionUuid(Guid auctionUuid)
+    public async Task<List<CassandraBid>> GetBids(Guid player, CancellationToken ct)
     {
-        var uid = AuctionService.Instance.GetId(auctionUuid.ToString("N"));
-        return (await scylla.AuctionsTable.Where(a => a.AuctionUid == uid).AllowFiltering().ExecuteAsync()).ToList();
+        ct.ThrowIfCancellationRequested();
+        return (await scylla.GetBidsTableInstance().Where(b => b.BidderUuid == player).ExecuteAsync()).ToList();
     }
 
-    public async Task<ScyllaAuction> GetAuction(AuctionRowKey key) =>
-        (await scylla.AuctionsTable.Where(a => a.Tag == key.Tag && a.TimeKey == key.TimeKey && a.IsSold == key.IsSold && a.End == key.End && a.AuctionUid == key.AuctionUid)
+    // same shape as ScyllaService.GetRecentFromPlayer (index + ALLOW FILTERING), but read page by page
+    public Task<List<ScyllaAuction>> GetAuctionsBySeller(Guid player, CancellationToken ct) =>
+        ReadPaged(scylla.AuctionsTable.Where(a => a.Auctioneer == player).AllowFiltering(), ct);
+
+    public Task<List<ScyllaAuction>> GetAuctionsByHighestBidder(Guid player, CancellationToken ct) =>
+        ReadPaged(scylla.AuctionsTable.Where(a => a.HighestBidder == player).AllowFiltering(), ct);
+
+    private async Task<List<ScyllaAuction>> ReadPaged(CqlQuery<ScyllaAuction> query, CancellationToken ct)
+    {
+        var result = new List<ScyllaAuction>();
+        var pages = 0;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        query.SetPageSize(IndexPageSize);
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            var page = await query.ExecutePagedAsync();
+            pages++;
+            result.AddRange(page);
+            if (page.PagingState == null)
+                break;
+            query.SetPagingState(page.PagingState);
+        }
+        logger?.LogInformation("Privacy index query read {Rows} rows in {Pages} pages, {Elapsed}ms", result.Count, pages, sw.ElapsedMilliseconds);
+        return result;
+    }
+
+    // same shape as ScyllaService.GetAuction(Guid): plain secondary index lookup without ALLOW FILTERING
+    public async Task<List<ScyllaAuction>> GetAuctionsByAuctionUuid(Guid auctionUuid, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var uid = AuctionService.Instance.GetId(auctionUuid.ToString("N"));
+        return (await scylla.AuctionsTable.Where(a => a.AuctionUid == uid).ExecuteAsync()).ToList();
+    }
+
+    public async Task<ScyllaAuction> GetAuction(AuctionRowKey key, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        return (await scylla.AuctionsTable.Where(a => a.Tag == key.Tag && a.TimeKey == key.TimeKey && a.IsSold == key.IsSold && a.End == key.End && a.AuctionUid == key.AuctionUid)
             .ExecuteAsync()).FirstOrDefault();
+    }
 
-    public Task UpdateAuctionIdentity(ScyllaAuction row) => scylla.UpdateAuctionIdentity(row);
+    public Task UpdateAuctionIdentity(ScyllaAuction row, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        return scylla.UpdateAuctionIdentity(row);
+    }
 
-    public async Task DeleteBids(Guid player) =>
+    public async Task DeleteBids(Guid player, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
         await scylla.GetBidsTableInstance().Where(b => b.BidderUuid == player).Delete().SetConsistencyLevel(ConsistencyLevel.LocalQuorum).ExecuteAsync();
+    }
 
     public async Task<Dictionary<int, List<PlayerParticipationEntry>>> GetS3Participation(Guid player, CancellationToken ct)
     {
