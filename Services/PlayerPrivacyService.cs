@@ -258,8 +258,9 @@ public class PlayerPrivacyService
         sw.Restart();
         var auctionUuids = bids.Select(b => b.AuctionUuid).Distinct().ToList();
         var viaBids = await MapBounded(auctionUuids, (uuid, token) => store.GetAuctionsByAuctionUuid(uuid, token), ct);
+        // an auction has several rows (eg. the unsold snapshot from before the bid), only the ones naming the player are in scope
         foreach (var found in viaBids)
-            foreach (var row in found)
+            foreach (var row in found.Where(r => Involves(r, player) || r.ProfileId == player))
                 rows[AuctionRowKey.From(row)] = row;
         Log("Privacy lookup {Player}: {Count} distinct auctions from {Bids} bids in {Elapsed}ms", player, auctionUuids.Count, bids.Count, sw.ElapsedMilliseconds);
         return rows;

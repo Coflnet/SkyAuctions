@@ -392,6 +392,26 @@ public class PlayerPrivacyTests
     }
 
     [Test]
+    public async Task OtherSnapshotsOfBidAuctionsWithoutThePlayerAreNotExported()
+    {
+        // regression: the unsold snapshot row of an auction the player later bid on made the erase fail with "does not involve the player"
+        var (service, store) = Setup();
+        var bidRow = store.Auctions.Single(a => a.AuctionUid == 2);
+        var snapshot = Row(Other2, Guid.Empty);
+        snapshot.AuctionUid = 2;
+        snapshot.Uuid = bidRow.Uuid;
+        snapshot.IsSold = false;
+        store.Auctions.Add(snapshot);
+
+        var export = await service.Export(OptedOut);
+        Assert.That(export.Auctions.Count(a => a.AuctionUid == 2), Is.EqualTo(1));
+        Assert.That(export.Auctions.Single(a => a.AuctionUid == 2).IsSold, Is.True);
+
+        var result = await service.Erase(OptedOut, export);
+        Assert.That(result.AuctionsRewritten, Is.EqualTo(2));
+    }
+
+    [Test]
     public async Task EraseRewritesExportedRowsDeletesBidsAndS3()
     {
         var (service, store) = Setup();
