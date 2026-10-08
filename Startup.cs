@@ -67,6 +67,7 @@ public class Startup
         );
         services.AddJaeger(Configuration);
         services.AddTransient<BaseService>();
+        services.AddPlayerOptOut();
         services.AddSingleton<KafkaCreator>();
         services.AddSingleton<Coflnet.Sky.Kafka.KafkaCreator>();
         services.AddSingleton<INBT, NBT>();

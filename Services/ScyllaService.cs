@@ -44,6 +44,16 @@ public class ScyllaService
     public Table<QueryArchive> QueryArchiveTable { get; set; }
     private Table<CassandraBid> BidsTable { get; set; }
     private ILogger<ScyllaService> Logger { get; set; }
+
+    private const string UpdateIdentityCql =
+        "UPDATE weekly_auctions_2 SET auctioneer = ?, highestbidder = ?, profileid = ?, profilename = ?, coopname = ?, highestbiddername = ?, coop = ?, serialisedbids = ? "
+        + "WHERE tag = ? AND timekey = ? AND issold = ? AND end = ? AND auctionuid = ?";
+    private PreparedStatement updateIdentityStatement;
+
+    /// <summary>
+    /// Persists the identity columns of a row that was anonymized at read time. Replaceable for tests.
+    /// </summary>
+    internal Func<ScyllaAuction, Task> IdentityWriteBack { get; set; }
     private FilterEngine FilterEngine { get; set; }
     
     /// <summary>
@@ -82,6 +92,7 @@ public class ScyllaService
 
     public async Task InsertAuction(SaveAuction auction)
     {
+        PlayerOptOut.Mask(auction);
         if (auction.AuctioneerId == null && auction.Tag == null && auction.HighestBidAmount == 0)
             return;
         ScyllaAuction converted = ToCassandra(auction);
@@ -108,7 +119,7 @@ public class ScyllaService
         var statement = AuctionsTable.Insert(converted).SetConsistencyLevel(ConsistencyLevel.LocalQuorum);
         foreach (var item in converted.Bids)
         {
-            batch = batch.Add(BidsTable.Insert(item));
+            batch = batch.Add(GetBidsTableInstance().Insert(item));
         }
         batch = batch.Add(statement);
         batch.SetConsistencyLevel(ConsistencyLevel.LocalQuorum);
@@ -250,7 +261,8 @@ public class ScyllaService
 
     public async Task InsertBid(SaveBids bid, Guid guid)
     {
-        await BidsTable.Insert(ToCassandra(bid, guid)).ExecuteAsync();
+        MaskBid(bid);
+        await GetBidsTableInstance().Insert(ToCassandra(bid, guid)).ExecuteAsync();
     }
 
     private static CassandraBid ToCassandra(SaveBids bid, Guid auctionUuid)
@@ -263,6 +275,48 @@ public class ScyllaService
             Timestamp = bid.Timestamp,
             ProfileId = bid.ProfileId == "unknown" ? Guid.Parse("00000000-0000-0000-0000-000000000001") : Guid.Parse(bid.ProfileId ?? bid.Bidder)
         };
+    }
+
+    /// <summary>Rewrites only the identity columns of the row</summary>
+    internal async Task UpdateAuctionIdentity(ScyllaAuction row)
+    {
+        updateIdentityStatement ??= await Session.PrepareAsync(UpdateIdentityCql);
+        var bound = updateIdentityStatement.Bind(
+            row.Auctioneer, row.HighestBidder, row.ProfileId, row.ProfileName, row.CoopName, row.HighestBidderName, row.Coop, row.SerialisedBids,
+            row.Tag, row.TimeKey, row.IsSold, DateTime.SpecifyKind(row.End, DateTimeKind.Utc), row.AuctionUid);
+        bound.SetConsistencyLevel(ConsistencyLevel.LocalQuorum);
+        await Session.ExecuteAsync(bound).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Central row to SaveAuction conversion for reads of weekly_auctions_2. Rows that still reference an opted out player
+    /// (coop members are not indexed so they can't be erased eagerly) are anonymized, returned anonymized and the identity
+    /// columns are written back once (fire and forget, failures are logged only).
+    /// </summary>
+    internal SaveAuction ReadRow(CassandraAuction row)
+    {
+        var converted = CassandraToOld(row);
+        if (row is not ScyllaAuction scyllaRow)
+            return converted;
+        // cheap checks first, bids are already deserialized in the converted auction
+        if (!PlayerPrivacyService.RowColumnsInvolveOptedOut(scyllaRow) && !OptOutScrubber.ContainsOptedOut(converted))
+            return converted;
+        if (!PlayerPrivacyService.AnonymizeRowForOptedOut(scyllaRow))
+            return converted;
+        _ = WriteBackIdentity(scyllaRow);
+        return CassandraToOld(scyllaRow);
+    }
+
+    private async Task WriteBackIdentity(ScyllaAuction row)
+    {
+        try
+        {
+            await (IdentityWriteBack ?? UpdateAuctionIdentity)(row).ConfigureAwait(false);
+        }
+        catch (Exception e)
+        {
+            Logger.LogError(e, "Failed to write back anonymized auction {Tag} {AuctionUid}", row.Tag, row.AuctionUid);
+        }
     }
 
     public async Task<SaveAuction[]> GetAuction(Guid uuid)
@@ -283,7 +337,7 @@ public class ScyllaService
             }
         }
         
-        return auctions.Select(CassandraToOld).ToArray();
+        return auctions.Select(ReadRow).ToArray();
     }
 
     public async Task<SaveAuction> GetCombinedAuction(Guid uuid)
@@ -382,7 +436,7 @@ public class ScyllaService
         Console.WriteLine(JsonConvert.SerializeObject(statement.QueryTrace.Events.Select(s => s.ToString()), Formatting.Indented));
         Console.WriteLine(JsonConvert.SerializeObject(statement.QueryTrace.Parameters));
         Console.WriteLine(JsonConvert.SerializeObject(statement.QueryTrace.RequestType));
-        var converted = ToOldFormat(result).ToList();
+        var converted = result.Select(ReadRow).ToList();
         if (ShadowRead != null && ShadowRead.IsEnabled)
         {
             ShadowRead.ComparePlayer(playerUuid, converted);
@@ -403,10 +457,16 @@ public class ScyllaService
         });
     }
 
-    private static IEnumerable<SaveAuction> ToOldFormat(IEnumerable<CassandraAuction> result)
+    private static void MaskBid(SaveBids bid)
     {
-        return result.Select(CassandraToOld);
+        if (PlayerOptOut.IsOptedOut(bid.Bidder))
+            PlayerOptOut.Anonymize(bid);
+        else if (PlayerOptOut.IsOptedOut(bid.ProfileId))
+            bid.ProfileId = null;
     }
+
+    /// <summary>The bids table, created lazily so it is usable before <see cref="Create"/> ran</summary>
+    internal Table<CassandraBid> GetBidsTableInstance() => BidsTable ??= GetBidsTable();
 
     private Table<CassandraBid> GetBidsTable()
     {
@@ -438,6 +498,9 @@ public class ScyllaService
 
     internal async Task InsertAuctionsOfTag(IEnumerable<SaveAuction> auctions)
     {
+        auctions = auctions.ToList();
+        foreach (var auction in auctions)
+            PlayerOptOut.Mask(auction);
         var tag = auctions.First().Tag;
         if (!auctions.All(a => a.Tag == tag))
             throw new ArgumentException("All auctions must have the same tag");
@@ -495,6 +558,7 @@ public class ScyllaService
             match.ProfileId = a.ProfileId.ToString();
             match.Bin = a.Bin;
             match.StartingBid = a.StartingBid;
+            PlayerOptOut.Mask(match); // the loaded row may still carry an opted out profile id
 
             Console.WriteLine($"retrofitted {match.Uuid} {match.ItemName} {match.Start} {match.Count} {match.ItemCreatedAt} {match.ProfileId} {match.Bin} {match.StartingBid}");
 
@@ -511,7 +575,8 @@ public class ScyllaService
         Statement statement = null;
         foreach (var b in bids)
         {
-            statement = BidsTable.Insert(ToCassandra(b, Guid.Parse(b.AuctionId)));
+            MaskBid(b);
+            statement = GetBidsTableInstance().Insert(ToCassandra(b, Guid.Parse(b.AuctionId)));
             batch.Add(statement);
         }
         batch.SetRoutingKey(statement.RoutingKey);
@@ -536,11 +601,11 @@ public class ScyllaService
                     && a.End > DateTime.UtcNow - TimeSpan.FromDays(days) && a.End < DateTime.UtcNow && a.IsSold).ExecuteAsync();
 
         var rows = batch.ToList();
-        var result = FilterEngine.Filter(rows.Select(CassandraToOld), dictionary).ToList();
+        var result = FilterEngine.Filter(rows.Select(ReadRow), dictionary).ToList();
         if (ShadowRead != null && ShadowRead.IsEnabled)
         {
             // Shadow read against the S3 archive for the current month - useful once live mirroring is on.
-            ShadowRead.CompareTagMonth("sumary", itemTag, DateTime.UtcNow, rows.Select(CassandraToOld).ToList());
+            ShadowRead.CompareTagMonth("sumary", itemTag, DateTime.UtcNow, rows.Select(ReadRow).ToList());
         }
         if (result.Count == 0)
             return new PriceSumary();
@@ -561,6 +626,6 @@ public class ScyllaService
         var currentMonth = GetWeekOrDaysSinceStart(itemTag, DateTime.UtcNow);
         var batch = await AuctionsTable.Where(a => a.Tag == itemTag && a.TimeKey == currentMonth && a.End > DateTime.UtcNow - TimeSpan.FromDays(2) && a.IsSold)
                     .OrderByDescending(a => a.End).Take(1000).ExecuteAsync();
-        return batch.Select(CassandraToOld).ToList();
+        return batch.Select(ReadRow).ToList();
     }
 }

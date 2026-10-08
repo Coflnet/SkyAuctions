@@ -294,8 +294,12 @@ public class SellsCollector : BackgroundService
         }
     }
 
-    private async Task InsertSells(IEnumerable<SaveAuction> ab)
+    internal async Task InsertSells(IEnumerable<SaveAuction> ab)
     {
+        // opted out players must never reach scylla or the S3 mirror
+        ab = ab.ToList();
+        foreach (var auction in ab)
+            PlayerOptOut.Mask(auction);
         ParallelOptions options = new()
         {
             MaxDegreeOfParallelism = 10

@@ -39,6 +39,9 @@ public class S3PlayerIndexService
 
     public void AddParticipations(Guid player, IEnumerable<PlayerParticipationEntry> entries)
     {
+        // never index opted out or already anonymized identities
+        if (PlayerOptOut.IsOptedOut(player) || PlayerOptOut.IsAnonymousUuid(player.ToString("N")))
+            return;
         foreach (var entry in entries)
         {
             var key = $"{player:N}_{entry.End.Year}";
@@ -125,6 +128,14 @@ public class S3PlayerIndexService
     }
 
     public async Task<List<PlayerParticipationEntry>> GetParticipation(Guid player, int year, CancellationToken ct = default)
+    {
+        if (PlayerOptOut.IsOptedOut(player))
+            return new List<PlayerParticipationEntry>();
+        return await ReadParticipationUnfiltered(player, year, ct);
+    }
+
+    /// <summary>Reads the stored entries even for opted out players, only for the privacy export</summary>
+    public async Task<List<PlayerParticipationEntry>> ReadParticipationUnfiltered(Guid player, int year, CancellationToken ct = default)
     {
         var blobKey = BlobKey(player, year);
         var data = await s3.GetBlob(blobKey, ct);

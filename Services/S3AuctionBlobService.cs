@@ -40,6 +40,8 @@ public class S3AuctionBlobService
                 {
                     var data = await s3.GetBlob(key, ct);
                     existing = serializer.Deserialize(data);
+                    // lazy scrub, the merged write below persists the masked chunk
+                    OptOutScrubber.MaskAll(existing);
                 }
                 catch (Exception e)
                 {
@@ -59,6 +61,7 @@ public class S3AuctionBlobService
 
             foreach (var auction in newAuctions)
             {
+                PlayerOptOut.Mask(auction);
                 var normalizedUuid = AuctionIdentity.NormalizeUuid(auction.Uuid);
                 if (string.IsNullOrEmpty(normalizedUuid))
                 {
@@ -90,7 +93,35 @@ public class S3AuctionBlobService
     {
         var key = BlobKey(tag, month);
         var data = await s3.GetBlob(key, ct);
-        return serializer.Deserialize(data);
+        var auctions = serializer.Deserialize(data);
+        if (!auctions.Any(OptOutScrubber.ContainsOptedOut))
+            return auctions;
+        return await ScrubBlob(key, ct);
+    }
+
+    /// <summary>
+    /// Lazy erasure: masks opted out players in a stored chunk and writes it back (only when something changed).
+    /// Reloads under the blob lock so a concurrent <see cref="WriteAuctions"/> is not lost.
+    /// </summary>
+    private async Task<List<SaveAuction>> ScrubBlob(string key, CancellationToken ct)
+    {
+        var writeLock = blobLocks.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
+        await writeLock.WaitAsync(ct);
+        try
+        {
+            var auctions = serializer.Deserialize(await s3.GetBlob(key, ct));
+            if (OptOutScrubber.MaskAll(auctions))
+            {
+                var bytes = serializer.Serialize(auctions);
+                await s3.PutBlob(key, bytes, "application/gzip", ct);
+                logger.LogInformation("Masked opted out players in archive blob {Key}", key);
+            }
+            return auctions;
+        }
+        finally
+        {
+            writeLock.Release();
+        }
     }
 
     public async Task<bool> BlobExists(string tag, DateTime month, CancellationToken ct = default)
