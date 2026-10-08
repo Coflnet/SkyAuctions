@@ -78,7 +78,6 @@ public interface IPlayerPrivacyStore
 {
     Task<List<CassandraBid>> GetBids(Guid player, CancellationToken ct);
     Task<List<ScyllaAuction>> GetAuctionsBySeller(Guid player, CancellationToken ct);
-    Task<List<ScyllaAuction>> GetAuctionsByHighestBidder(Guid player, CancellationToken ct);
     Task<List<ScyllaAuction>> GetAuctionsByAuctionUuid(Guid auctionUuid, CancellationToken ct);
     Task<ScyllaAuction> GetAuction(AuctionRowKey key, CancellationToken ct);
     /// <summary>Rewrites only the identity columns of the row</summary>
@@ -253,11 +252,8 @@ public class PlayerPrivacyService
             rows[AuctionRowKey.From(row)] = row;
         Log("Privacy lookup {Player}: {Count} seller auctions in {Elapsed}ms", player, seller.Count, sw.ElapsedMilliseconds);
 
-        sw.Restart();
-        var highest = await store.GetAuctionsByHighestBidder(player, ct);
-        foreach (var row in highest)
-            rows[AuctionRowKey.From(row)] = row;
-        Log("Privacy lookup {Player}: {Count} highest bidder auctions in {Elapsed}ms", player, highest.Count, sw.ElapsedMilliseconds);
+        // no lookup by highest bidder: that query is a full table scan in production,
+        // and the highest bidder always has a row in the bids table, which is followed below
 
         sw.Restart();
         var auctionUuids = bids.Select(b => b.AuctionUuid).Distinct().ToList();

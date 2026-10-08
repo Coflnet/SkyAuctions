@@ -336,7 +336,6 @@ public class PlayerPrivacyTests
 
         public Task<List<CassandraBid>> GetBids(Guid player, CancellationToken ct) => Task.FromResult(Bids.Where(b => b.BidderUuid == player).ToList());
         public Task<List<ScyllaAuction>> GetAuctionsBySeller(Guid player, CancellationToken ct) => Task.FromResult(Auctions.Where(a => a.Auctioneer == player).ToList());
-        public Task<List<ScyllaAuction>> GetAuctionsByHighestBidder(Guid player, CancellationToken ct) => Task.FromResult(Auctions.Where(a => a.HighestBidder == player).ToList());
         public async Task<List<ScyllaAuction>> GetAuctionsByAuctionUuid(Guid auctionUuid, CancellationToken ct)
         {
             ct.ThrowIfCancellationRequested();
@@ -455,7 +454,8 @@ public class PlayerPrivacyTests
     public async Task EraseWithManyBidsKeepsResultAndBound()
     {
         var (service, store) = Setup();
-        store.Bids.Clear();
+        // the fixture bids stay: auctions the player only bid on (incl. as highest bidder) are found through the bids table,
+        // there is no lookup by highest bidder (full table scan in production)
         AddManyBids(store, 30, 2);
         store.LookupDelayMs = 5;
         var export = await service.Export(OptedOut);
@@ -463,8 +463,10 @@ public class PlayerPrivacyTests
 
         var result = await service.Erase(OptedOut, export);
 
-        Assert.That(result.BidsDeleted, Is.EqualTo(60));
-        Assert.That(result.AuctionsRewritten, Is.EqualTo(32));
+        Assert.That(result.BidsDeleted, Is.EqualTo(export.Bids.Count));
+        Assert.That(result.BidsDeleted, Is.GreaterThanOrEqualTo(60));
+        Assert.That(result.AuctionsRewritten, Is.EqualTo(export.Auctions.Count));
+        Assert.That(result.AuctionsRewritten, Is.GreaterThanOrEqualTo(31));
         Assert.That(store.MaxInFlight, Is.LessThanOrEqualTo(PlayerPrivacyService.MaxConcurrency));
         Assert.That(store.Auctions.Where(a => PlayerPrivacyService.Involves(a, OptedOut)), Is.Empty);
     }

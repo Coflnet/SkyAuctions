@@ -48,9 +48,6 @@ public class ScyllaPlayerPrivacyStore : IPlayerPrivacyStore
     public Task<List<ScyllaAuction>> GetAuctionsBySeller(Guid player, CancellationToken ct) =>
         ReadPaged(scylla.AuctionsTable.Where(a => a.Auctioneer == player).AllowFiltering(), ct);
 
-    public Task<List<ScyllaAuction>> GetAuctionsByHighestBidder(Guid player, CancellationToken ct) =>
-        ReadPaged(scylla.AuctionsTable.Where(a => a.HighestBidder == player).AllowFiltering(), ct);
-
     private async Task<List<ScyllaAuction>> ReadPaged(CqlQuery<ScyllaAuction> query, CancellationToken ct)
     {
         var result = new List<ScyllaAuction>();
