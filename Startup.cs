@@ -50,6 +50,8 @@ public class Startup
             var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";
             var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
             c.IncludeXmlComments(xmlPath);
+            // object values are written as a null-only schema, which the client generator turns into an empty enum
+            c.DocumentFilter<Coflnet.OpenApi.NullOnlySchemaDocumentFilter>();
         }).AddSwaggerGenNewtonsoftSupport();
 
         // Replace with your server version and type.
