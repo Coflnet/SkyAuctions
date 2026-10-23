@@ -174,6 +174,21 @@ public class Startup
             {
                 services.AddHostedService<MariaDbToS3BackfillService>();
             }
+
+            // Auction archive v2, phase 2: Scylla -> R2 sweep (MIGRATION.md "Phase 2 (v2 blobs)"), off unless ARCHIVE:ENABLED.
+            // MariaDB is only read; progress markers live in Redis (ARCHIVE:REDIS_HOST, else SETTINGS_REDIS_HOST), SkyIndexer imports the R2 manifests.
+            services.AddSingleton<Archive.S3AuctionBlobStore>();
+            services.AddSingleton<Coflnet.Sky.Core.Archive.IAuctionBlobStore>(p => p.GetRequiredService<Archive.S3AuctionBlobStore>());
+            services.AddSingleton<Coflnet.Sky.Core.Archive.IArchiveMetaStore>(p => p.GetRequiredService<Archive.S3AuctionBlobStore>());
+            if (Configuration.GetValue<bool>("ARCHIVE:ENABLED"))
+            {
+                Coflnet.Sky.Core.Archive.ArchiveContext.SetConfiguration(Configuration);
+                // own multiplexer: the service's REDIS_HOST (sky-auctions-redis) is retired
+                services.AddKeyedSingleton<IConnectionMultiplexer>(Archive.ScyllaArchiveRedis.ServiceKey, (_, _) => Archive.ScyllaArchiveRedis.Connect(Configuration));
+                services.AddSingleton<Archive.IScyllaArchiveMarkers>(p => new Archive.RedisScyllaArchiveMarkers(
+                    () => p.GetRequiredKeyedService<IConnectionMultiplexer>(Archive.ScyllaArchiveRedis.ServiceKey)));
+                services.AddHostedService<Archive.ScyllaArchiveSweep>();
+            }
         }
 
         // Deletion is OFF by default until S3 archive is verified 100% for the targeted period.

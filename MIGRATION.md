@@ -243,3 +243,72 @@ to `4000Mi`.
 - [ ] Phase 5 dry-run log shows expected delete volume, miss counter ~0
 - [ ] Manual sample of 100 random `[dry-run] would delete` UUIDs verified in S3 by hand
 - [ ] Phase 6: code uncommented, both flags `true`, deploy, watch `sky_auctions_delete_count`
+
+## Phase 2 (v2 blobs): Scylla sweep
+
+The v1 phases above (monthly gzip-JSON blobs, bloom filter, `ScyllaToS3BackfillService`) are superseded by the v2 archive
+(`auctions/v2/{tag}/{yyyy-MM}/{part:D3}.msgpack.br`, core `Coflnet.Sky.Core.Archive`). Phase 1 of v2 runs in SkyIndexer and
+archives MariaDB; this phase, `Services/Archive/ScyllaArchiveSweep.cs`, adds the rows that only Scylla has. **SkyAuctions never
+writes MariaDB** (its `DBConnection` is a read-only user): it writes R2 objects and Redis markers, and SkyIndexer's
+`ScyllaArchiveImportWorker` does every MariaDB write.
+
+- **Scope:** months `ARCHIVE:OLDEST_MONTH` .. `ARCHIVE:NEWEST_MONTH` (defaults 2019-07 .. 2021-03, the months where MariaDB only
+  holds leftovers). The sweep never goes past `NEWEST_MONTH`.
+- **MariaDB, read only:** the month sentinel (`archived_months` row with `tag_id = 0`: exists? `scylla_at`?), the tag's row
+  (parts, rows, sold rows, sha256, source; read as a projection), `auction_tags` ids and `auction_locations` (superseded check).
+  At start one cheap sentinel query verifies the connection; failures log
+  `Auction archive: MariaDB (DBConnection) unavailable, retrying in 10 min` and retry every 10 minutes.
+- **Per tag-month:** phase-1 parts are read uncached (never rewritten). The Scylla partitions overlapping the month are paged
+  (`LocalOne`, `PAGE_SIZE`, up to `PAGE_RETRIES` retries per page with 2/4/8 s backoff resuming from the same paging state), rows
+  outside the month are skipped (End before 2019-06 counts as garbage), rows are deduped per auction uid (sold, then higher bid,
+  then later End). Auctions phase 1 has are only cross-checked (highest bid, sold flag, End, item bytes length, starting bid);
+  phase-1 data always wins. A Scylla-only auction that already has an `auction_locations` row in another tag-month is a stale
+  copy (an unsold snapshot of an auction bought earlier and archived in an earlier month) and is skipped (`rows_superseded`).
+  Scylla-only rows are written as parts N, N+1, ... (source `scylla`) and verified by uncached read-back. Then, in this order:
+  1. the R2 tag index entry (source `merged` when phase-1 parts exist, `scylla` otherwise),
+  2. the month manifest `auctions/v2/_meta/scylla/{yyyy-MM}.msgpack.br` (`ScyllaMonthManifest`, one `ScyllaTagImport` per tag:
+     first new part, new parts, rows, sold, part hashes),
+  3. the Redis marker.
+  Tag index and manifest writes are conditional PUTs (If-Match on the ETag read, If-None-Match: * when new; SkyIndexer writes
+  the tag indexes the same way); on a conflict the object is re-read and the change re-applied, up to 5 times, else the
+  tag-month fails without marker. A failure before the marker is redone next pass: parts N.. are rewritten and the manifest
+  entry of the tag is replaced, never duplicated. A phase-1 month whose tag index entry is missing is rebuilt from its parts
+  (recomputed hashes must match `archived_months.sha256`).
+- **Markers (Redis):** host `ARCHIVE:REDIS_HOST`, else `SETTINGS_REDIS_HOST` (sky-settings-redis, next to the bazaar archive
+  markers; not the retired sky-auctions-redis). Keys: `auctions_archive:v2:{tag}:{yyyy-MM}` =
+  `archived:{scyllaOnlyRows}:{newParts}:{iso}` | `empty:{iso}` | `overlap_only:{iso}`; `auctions_archive:v2:month:{yyyy-MM}` =
+  iso when every tag of the month is done (the manifest gets `CompletedAt` first, also when no tag had new rows);
+  `auctions_archive:v2:sweep_complete` = iso when every month in scope is done. Tag-months and months with a marker are
+  skipped; lost markers are harmless (an imported tag/month is recognised by `scylla_at`, otherwise the work is redone).
+- **Hand-off and pipeline gate:** SkyIndexer's `ScyllaArchiveImportWorker` (every `ARCHIVE:IMPORT_POLL_MINUTES`, default 5)
+  reads each manifest whose sentinel has no `scylla_at`, verifies each new part's SHA-256 against the manifest and the tag
+  index, writes `auction_locations` (never moving another tag-month's location) and `auction_bidders` (bidder uuid to
+  `Players.Id`), upserts the tag's `archived_months` row (parts, rows, sold rows, sha256 over all parts, source, `index_rows`
+  and `index_bidder_rows` grown by the same amount so the retention worker's `index_rows == rows` gate holds, `scylla_at`) and,
+  once the manifest is completed and every entry imported, sets `scylla_at` on the sentinel. **The sweep starts month M+1 only
+  after month M's sentinel has `scylla_at`** (it logs `waiting for SkyIndexer to import {M}` once and checks again every `IMPORT_WAIT_MINUTES`), so the
+  superseded check always sees the locations of every earlier month.
+- **Deploy order:** `dev` (core) → SkyIndexer (applies the `ArchiveScyllaAt` migration, runs the import worker) → SkyAuctions.
+  The sweep reads `archived_months.scylla_at`; until SkyIndexer has migrated, its start check fails and retries every 10 minutes.
+- **Known lossy fields** (Scylla does not store them, so Scylla-only rows lack them): `Claimed`, claimed bidders, MariaDB's
+  short-keyed `NBTLookups` (Scylla's string-keyed `nbtlookup` is kept as the `NbtLookupStrings` column instead), `Reforge` and
+  `AnvilUses` as columns (restored from `nbtlookup` "modifier"/"anvil_uses" when present), bid `BidderId` (resolved to
+  `Players.Id` by SkyIndexer for `auction_bidders` only), bid bidder names. A seller profile that MariaDB had as null is stored by
+  Scylla as the seller uuid, a null bid profile as the bidder uuid. The block's sold flag is `highest bid > 0`, not Scylla's
+  `issold`. Scylla-only columns kept: highest bidder name, profile name, coop name, color, item uid, item id, nbtlookup strings
+  and enchantments that are no `EnchantmentType` (`UnknownEnchantments`).
+- **Metrics** (`/metrics`): `sky_auctions_archive_tag_months_total`, `_tag_months_empty`, `_parts_written`, `_parts_verified`,
+  `_verify_failures`, `_rows_archived`, `_rows_already_archived`, `_rows_skipped_bogus_end`, `_rows_superseded`,
+  `_crosscheck_rows`, `_crosscheck_mismatches{field}`, `_pages`, `_partitions_read`, `_page_retries`, `_errors`, gauges
+  `_current_month`, `_partitions_known`, `_last_month_completed_timestamp`, `_waiting_for_import_month`; store
+  `sky_auctions_blob_*` (incl. `_blob_index_conflicts`). SkyIndexer: `sky_indexer_scylla_import_{tags, parts_verified,
+  hash_mismatches, index_rows, bidder_rows, bids_without_bidder, months_completed, errors}`.
+- **Config** (`ARCHIVE:*`, defaults in `appsettings.json`): `ENABLED` (false), `START_DELAY_SECONDS`, `OLDEST_MONTH`,
+  `NEWEST_MONTH`, `PAGE_SIZE`, `PAGE_PAUSE_MS`, `PARTITION_PAUSE_MS`, `TAG_PAUSE_MS`, `MONTH_PAUSE_MS`, `IDLE_PAUSE_MINUTES`
+  (pause between passes once the sweep is complete or while phase 1 is behind), `IMPORT_WAIT_MINUTES` (default 5, pause
+  between passes while waiting for SkyIndexer to import the previous month), `MAX_ROWS_PER_PART`, `MAX_PART` (at most 254: `archived_months.parts` is
+  a tinyint count), `PAGE_RETRIES`, `CIRCUIT_BREAKER_FAILURES`, `CIRCUIT_BREAKER_PAUSE_MINUTES`, `PARTITION_LIST_MAX_AGE_DAYS`,
+  `CROSSCHECK_LOG_LIMIT`, `REDIS_HOST` (empty = `SETTINGS_REDIS_HOST`). Needs `S3:ENABLED=true`, `S3:BUCKET_NAME`,
+  `DBConnection` (read-only is enough) and Redis.
+- **Deletion from Scylla is a later step** and not part of this phase. A Scylla partition (tag, week) may be deleted once every
+  month it overlaps has `scylla_at` on its sentinel.
