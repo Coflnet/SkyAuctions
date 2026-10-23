@@ -100,6 +100,14 @@ namespace Coflnet.Sky.Auctions.Archive
         public const string PartitionListKey = "scylla_partitions.msgpack.br";
         /// <summary>Uids per <c>auction_locations</c> lookup; MariaDB stops index dives at 200 IN values (phase 1 outage), stay well below.</summary>
         internal const int LocationLookupChunkSize = 100;
+        /// <summary>Partition keys per page of the token-range scan.</summary>
+        internal const int PartitionScanPageSize = 1000;
+        /// <summary>A token range that keeps timing out is halved at most this often (to 1/256 of its width) before the pass fails.</summary>
+        internal const int MaxRangeSplitDepth = 8;
+        /// <summary>Progress is logged every this many ranges.</summary>
+        internal const int PartitionScanLogEvery = 256;
+        private const string FirstRangeCql = "SELECT DISTINCT tag, timekey FROM weekly_auctions_2 WHERE token(tag, timekey) >= ? AND token(tag, timekey) <= ? BYPASS CACHE";
+        private const string RangeCql = "SELECT DISTINCT tag, timekey FROM weekly_auctions_2 WHERE token(tag, timekey) > ? AND token(tag, timekey) <= ? BYPASS CACHE";
         /// <summary>Wait before retrying when MariaDB or Redis is not reachable.</summary>
         internal static readonly TimeSpan DatabaseRetryDelay = TimeSpan.FromMinutes(10);
         /// <summary>Wait after a pass failed with an exception.</summary>
@@ -116,6 +124,8 @@ namespace Coflnet.Sky.Auctions.Archive
         private bool completeLogged;
         private int? waitingLoggedFor;
         private bool lastPassWaitingForImport;
+        private PreparedStatement firstRangeStatement;
+        private PreparedStatement rangeStatement;
 
         private static readonly Prometheus.Counter tagMonthsTotal = Prometheus.Metrics.CreateCounter("sky_auctions_archive_tag_months_total", "Tag-months finished by the Scylla sweep (archived, nothing new or empty)");
         private static readonly Prometheus.Counter tagMonthsEmpty = Prometheus.Metrics.CreateCounter("sky_auctions_archive_tag_months_empty", "Tag-months without phase-1 row and without Scylla rows");
@@ -133,6 +143,10 @@ namespace Coflnet.Sky.Auctions.Archive
         private static readonly Prometheus.Counter pageRetries = Prometheus.Metrics.CreateCounter("sky_auctions_archive_page_retries", "Scylla page retries");
         private static readonly Prometheus.Counter errors = Prometheus.Metrics.CreateCounter("sky_auctions_archive_errors", "Scylla sweep errors (failed tag-months, failed passes, MariaDB/Redis unavailable)");
         private static readonly Prometheus.Gauge currentMonth = Prometheus.Metrics.CreateGauge("sky_auctions_archive_current_month", "Month (yyyyMM) being swept");
+        private static readonly Prometheus.Counter partitionScanRetries = Prometheus.Metrics.CreateCounter("sky_auctions_archive_partition_scan_retries", "Partition scan pages retried after a Scylla timeout");
+        private static readonly Prometheus.Counter partitionScanSplits = Prometheus.Metrics.CreateCounter("sky_auctions_archive_partition_scan_splits", "Token ranges halved because they kept timing out");
+        private static readonly Prometheus.Gauge partitionScanRangesDone = Prometheus.Metrics.CreateGauge("sky_auctions_archive_partition_scan_ranges_done", "Token ranges of the current partition scan done");
+        private static readonly Prometheus.Gauge partitionScanFound = Prometheus.Metrics.CreateGauge("sky_auctions_archive_partition_scan_found", "In-scope partitions found by the current partition scan");
         private static readonly Prometheus.Gauge partitionsKnown = Prometheus.Metrics.CreateGauge("sky_auctions_archive_partitions_known", "Scylla partitions in the swept months");
         private static readonly Prometheus.Gauge lastMonthCompleted = Prometheus.Metrics.CreateGauge("sky_auctions_archive_last_month_completed_timestamp", "Unix time the sweep last finished a month (manifest completed, month marker set)");
         private static readonly Prometheus.Gauge waitingForImport = Prometheus.Metrics.CreateGauge("sky_auctions_archive_waiting_for_import_month", "Month (yyyyMM) the sweep waits for SkyIndexer to import, 0 when not waiting");
@@ -417,24 +431,127 @@ namespace Coflnet.Sky.Auctions.Archive
                 && cached.Partitions != null;
             if (!fresh)
             {
-                var all = await LoadPartitionListAsync(cancellationToken).ConfigureAwait(false);
-                var inScope = all.Where(p => !string.IsNullOrEmpty(p.Tag) && ScyllaArchiveRows.OverlapsMonths(p.Tag, p.TimeKey, options.OldestMonth, options.NewestMonth))
+                var found = await ScanPartitionsAsync(options, cancellationToken).ConfigureAwait(false);
+                var inScope = found.Where(p => !string.IsNullOrEmpty(p.Tag) && ScyllaArchiveRows.OverlapsMonths(p.Tag, p.TimeKey, options.OldestMonth, options.NewestMonth))
                     .Distinct().OrderBy(p => p.Tag, StringComparer.Ordinal).ThenBy(p => p.TimeKey).ToList();
                 cached = new ScyllaPartitionList { CreatedAt = nowUtc, Partitions = inScope, OldestMonth = options.OldestMonth, NewestMonth = options.NewestMonth };
-                logger.LogInformation("Scylla archive: {All} partitions in weekly_auctions_2, {InScope} overlap {Oldest}..{Newest}",
-                    all.Count, inScope.Count, ArchiveMonths.Format(options.OldestMonth), ArchiveMonths.Format(options.NewestMonth));
+                logger.LogInformation("Scylla archive: partition scan complete, {InScope} partitions of weekly_auctions_2 overlap {Oldest}..{Newest}",
+                    inScope.Count, ArchiveMonths.Format(options.OldestMonth), ArchiveMonths.Format(options.NewestMonth));
                 try
                 {
                     await meta.WriteMetaAsync(PartitionListKey, cached, cancellationToken).ConfigureAwait(false);
+                    // only now: if the cache write fails, the next pass takes the finished scan from Redis instead of rescanning
+                    await markers.DeleteAsync(ScyllaArchiveMarkerKeys.PartitionScanFound, ScyllaArchiveMarkerKeys.PartitionScanNext).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
-                    logger.LogWarning(ex, "Scylla archive: could not cache the partition list; the next start rescans");
+                    logger.LogWarning(ex, "Scylla archive: could not cache the partition list; the scan result stays in Redis for the next pass");
                 }
             }
             partitionsKnown.Set(cached.Partitions.Count);
             return cached.Partitions;
         }
+
+        /// <summary>
+        /// Every in-scope partition key of <c>weekly_auctions_2</c>, scanned as <c>PARTITION_SCAN_RANGES</c> token ranges (a single
+        /// <c>SELECT DISTINCT</c> over the 925 GB table times out). Progress is kept in Redis (<see cref="ScyllaArchiveMarkerKeys.PartitionScanFound"/>,
+        /// <see cref="ScyllaArchiveMarkerKeys.PartitionScanNext"/>), so a restart continues with the next range; another range count
+        /// or month scope restarts the scan.
+        /// </summary>
+        internal async Task<List<(string Tag, short TimeKey)>> ScanPartitionsAsync(ScyllaArchiveOptions options, CancellationToken cancellationToken)
+        {
+            var ranges = ScyllaTokenRange.Split(options.PartitionScanRanges);
+            var progress = await markers.GetAsync(ScyllaArchiveMarkerKeys.PartitionScanNext).ConfigureAwait(false);
+            var next = ScyllaArchiveMarkerKeys.ResumeRange(progress, ranges.Count, options.OldestMonth, options.NewestMonth);
+            var found = new HashSet<(string Tag, short TimeKey)>();
+            if (next == 0)
+            {
+                await markers.DeleteAsync(ScyllaArchiveMarkerKeys.PartitionScanFound, ScyllaArchiveMarkerKeys.PartitionScanNext).ConfigureAwait(false);
+            }
+            else
+            {
+                foreach (var member in await markers.GetSetAsync(ScyllaArchiveMarkerKeys.PartitionScanFound).ConfigureAwait(false))
+                    if (ScyllaArchiveMarkerKeys.TryParsePartition(member, out var partition))
+                        found.Add(partition);
+                logger.LogInformation("Scylla archive: resuming the partition scan at range {Next}/{Total} with {Found} in scope", next, ranges.Count, found.Count);
+            }
+            partitionScanFound.Set(found.Count);
+            partitionScanRangesDone.Set(next);
+            for (var i = next; i < ranges.Count; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var inRange = await ScanTokenRangeAsync(ranges[i], options, 0, cancellationToken).ConfigureAwait(false);
+                var added = inRange.Where(found.Add).Select(p => ScyllaArchiveMarkerKeys.Partition(p.Tag, p.TimeKey)).ToList();
+                // found entries first, then the progress: a crash in between only re-reads this range
+                await markers.AddToSetAsync(ScyllaArchiveMarkerKeys.PartitionScanFound, added).ConfigureAwait(false);
+                await markers.SetAsync(ScyllaArchiveMarkerKeys.PartitionScanNext,
+                    ScyllaArchiveMarkerKeys.ScanProgress(i + 1, ranges.Count, options.OldestMonth, options.NewestMonth)).ConfigureAwait(false);
+                partitionScanRangesDone.Set(i + 1);
+                partitionScanFound.Set(found.Count);
+                if ((i + 1) % PartitionScanLogEvery == 0 || i + 1 == ranges.Count)
+                    logger.LogInformation("Scylla archive: partition scan {Done}/{Total} ranges, {Found} in scope", i + 1, ranges.Count, found.Count);
+                if (i + 1 < ranges.Count)
+                    await Delay(TimeSpan.FromMilliseconds(options.PagePauseMs), cancellationToken).ConfigureAwait(false);
+            }
+            return found.ToList();
+        }
+
+        /// <summary>
+        /// The in-scope partitions of one token range. Each page gets up to <c>PAGE_RETRIES</c> retries (2/4/8 s) on a Scylla timeout
+        /// or unavailable error, resuming from its paging state; a range that still fails is halved and both halves are scanned,
+        /// down to <see cref="MaxRangeSplitDepth"/> halvings, after which the pass fails (the scan resumes with this range).
+        /// </summary>
+        private async Task<HashSet<(string Tag, short TimeKey)>> ScanTokenRangeAsync(ScyllaTokenRange range, ScyllaArchiveOptions options, int depth, CancellationToken cancellationToken)
+        {
+            var found = new HashSet<(string Tag, short TimeKey)>();
+            byte[] pagingState = null;
+            while (true)
+            {
+                (IReadOnlyList<(string Tag, short TimeKey)> Rows, byte[] Next) page = default;
+                Exception failure = null;
+                for (var attempt = 0; ; attempt++)
+                {
+                    try
+                    {
+                        page = await FetchPartitionKeyPageAsync(range, pagingState, PartitionScanPageSize, cancellationToken).ConfigureAwait(false);
+                        failure = null;
+                        break;
+                    }
+                    catch (Exception ex) when (IsTransientScyllaError(ex))
+                    {
+                        failure = ex;
+                        if (attempt >= options.PageRetries)
+                            break;
+                        partitionScanRetries.Inc();
+                        var backoff = TimeSpan.FromSeconds(2 << attempt);
+                        logger.LogWarning("Scylla archive: partition scan of token range {Range} timed out (attempt {Attempt}): {Error}; retrying in {Backoff}", range, attempt + 1, ex.Message, backoff);
+                        await Delay(backoff, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+                if (failure != null)
+                {
+                    if (depth >= MaxRangeSplitDepth || !range.CanSplit)
+                        throw new InvalidOperationException($"Partition scan of token range {range} kept timing out after {depth} halvings", failure);
+                    partitionScanSplits.Inc();
+                    logger.LogWarning("Scylla archive: token range {Range} keeps timing out; scanning its two halves", range);
+                    var (low, high) = range.Halve();
+                    found.UnionWith(await ScanTokenRangeAsync(low, options, depth + 1, cancellationToken).ConfigureAwait(false));
+                    found.UnionWith(await ScanTokenRangeAsync(high, options, depth + 1, cancellationToken).ConfigureAwait(false));
+                    return found;
+                }
+                pages.Inc();
+                foreach (var (tag, timeKey) in page.Rows)
+                    if (!string.IsNullOrEmpty(tag) && ScyllaArchiveRows.OverlapsMonths(tag, timeKey, options.OldestMonth, options.NewestMonth))
+                        found.Add((tag, timeKey));
+                if (page.Next == null || page.Next.Length == 0)
+                    return found;
+                pagingState = page.Next;
+            }
+        }
+
+        /// <summary>Read/operation timeouts and unavailable replicas, which a retry or a smaller range can get past.</summary>
+        internal static bool IsTransientScyllaError(Exception ex)
+            => ex is QueryTimeoutException || ex is OperationTimedOutException || ex is UnavailableException;
 
         /// <summary>
         /// The phase-1 view of a tag-month, derived from its <c>archived_months</c> row (SkyIndexer only changes it when it imports
@@ -852,20 +969,30 @@ namespace Coflnet.Sky.Auctions.Archive
                 .Select(m => m.ScyllaAt).Take(1).ToListAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        /// <summary>Every partition key of <c>weekly_auctions_2</c> (one <c>SELECT DISTINCT</c> scan, page size 1000, LocalOne).</summary>
-        protected virtual async Task<List<(string Tag, short TimeKey)>> LoadPartitionListAsync(CancellationToken cancellationToken)
+        /// <summary>
+        /// One page of the partition keys in a token range (<c>SELECT DISTINCT tag, timekey ... WHERE token(tag, timekey) ... BYPASS CACHE</c>,
+        /// prepared, LocalOne, explicit paging) and the next paging state (null at the end of the range).
+        /// </summary>
+        protected virtual async Task<(IReadOnlyList<(string Tag, short TimeKey)> Rows, byte[] Next)> FetchPartitionKeyPageAsync(ScyllaTokenRange range, byte[] pagingState, int pageSize, CancellationToken cancellationToken)
         {
-            var statement = new SimpleStatement("SELECT DISTINCT tag, timekey FROM weekly_auctions_2")
-                .SetPageSize(1000)
-                .SetConsistencyLevel(ConsistencyLevel.LocalOne);
-            var rows = await scylla.Session.ExecuteAsync(statement).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            PreparedStatement prepared;
+            if (range.StartInclusive)
+                prepared = firstRangeStatement ??= await scylla.Session.PrepareAsync(FirstRangeCql).ConfigureAwait(false);
+            else
+                prepared = rangeStatement ??= await scylla.Session.PrepareAsync(RangeCql).ConfigureAwait(false);
+            // token() bounds are CQL bigint: bind them as long
+            var bound = prepared.Bind(range.Start, range.End);
+            bound.SetPageSize(pageSize);
+            bound.SetConsistencyLevel(ConsistencyLevel.LocalOne);
+            bound.SetAutoPage(false);
+            if (pagingState != null)
+                bound.SetPagingState(pagingState);
+            var rows = await scylla.Session.ExecuteAsync(bound).ConfigureAwait(false);
             var result = new List<(string, short)>();
-            foreach (var row in rows)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
+            foreach (var row in rows) // auto paging is off: only this page
                 result.Add((row.GetValue<string>("tag"), row.GetValue<short>("timekey")));
-            }
-            return result;
+            return (result, rows.PagingState);
         }
 
         /// <summary>Sentinel (<c>tag_id = 0</c>) of a month: does it exist, and its <c>scylla_at</c>.</summary>

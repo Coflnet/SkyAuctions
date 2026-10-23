@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Threading.Tasks;
 using Coflnet.Sky.Core.Archive;
@@ -18,6 +19,15 @@ namespace Coflnet.Sky.Auctions.Archive
 
         /// <summary>Set a marker (no expiry).</summary>
         Task SetAsync(string key, string value);
+
+        /// <summary>Add members to a set (idempotent).</summary>
+        Task AddToSetAsync(string key, IReadOnlyCollection<string> members);
+
+        /// <summary>Every member of a set (empty when it does not exist).</summary>
+        Task<IReadOnlyList<string>> GetSetAsync(string key);
+
+        /// <summary>Delete keys.</summary>
+        Task DeleteAsync(params string[] keys);
     }
 
     /// <summary>Marker keys and values (<c>auctions_archive:v2:*</c>, next to the bazaar archive markers in sky-settings-redis).</summary>
@@ -27,6 +37,44 @@ namespace Coflnet.Sky.Auctions.Archive
         public const string Prefix = "auctions_archive:v2:";
         /// <summary>Set when every month in scope is complete.</summary>
         public const string SweepComplete = Prefix + "sweep_complete";
+        /// <summary>Prefix of the partition scan progress (deleted when the scan completed and its result is cached in R2).</summary>
+        public const string PartitionScanPrefix = Prefix + "partitions:";
+        /// <summary>Set of the in-scope partitions found so far, <c>{tag}:{timekey}</c>.</summary>
+        public const string PartitionScanFound = PartitionScanPrefix + "found";
+        /// <summary><c>{nextRange}/{rangeCount}/{oldestMonth}/{newestMonth}</c>; another range count or scope restarts the scan.</summary>
+        public const string PartitionScanNext = PartitionScanPrefix + "next_range";
+
+        /// <summary>Set member of a partition.</summary>
+        public static string Partition(string tag, short timeKey) => tag + ":" + timeKey.ToString(CultureInfo.InvariantCulture);
+
+        /// <summary>Inverse of <see cref="Partition"/> (the timekey is after the last ':'); false for anything else.</summary>
+        public static bool TryParsePartition(string member, out (string Tag, short TimeKey) partition)
+        {
+            partition = default;
+            var colon = member?.LastIndexOf(':') ?? -1;
+            if (colon <= 0 || !short.TryParse(member.AsSpan(colon + 1), NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var key))
+                return false;
+            partition = (member[..colon], key);
+            return true;
+        }
+
+        /// <summary>Value of <see cref="PartitionScanNext"/>.</summary>
+        public static string ScanProgress(int nextRange, int rangeCount, int oldestMonth, int newestMonth)
+            => FormattableString.Invariant($"{nextRange}/{rangeCount}/{oldestMonth}/{newestMonth}");
+
+        /// <summary>The next range of a stored progress value if it belongs to the same range count and months, else 0 (restart).</summary>
+        public static int ResumeRange(string progress, int rangeCount, int oldestMonth, int newestMonth)
+        {
+            var parts = progress?.Split('/');
+            if (parts == null || parts.Length != 4
+                || !int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out var next)
+                || parts[1] != rangeCount.ToString(CultureInfo.InvariantCulture)
+                || parts[2] != oldestMonth.ToString(CultureInfo.InvariantCulture)
+                || parts[3] != newestMonth.ToString(CultureInfo.InvariantCulture)
+                || next > rangeCount)
+                return 0;
+            return next;
+        }
 
         /// <summary><c>auctions_archive:v2:{tag}:{yyyy-MM}</c> = <see cref="Archived"/> | <see cref="Empty"/> | <see cref="OverlapOnly"/>.</summary>
         public static string TagMonth(string tag, int month) => Prefix + tag + ":" + ArchiveMonths.Format(month);
@@ -67,6 +115,37 @@ namespace Coflnet.Sky.Auctions.Archive
 
         /// <inheritdoc/>
         public Task SetAsync(string key, string value) => redis.Value.GetDatabase().StringSetAsync(key, value);
+
+        /// <inheritdoc/>
+        public Task AddToSetAsync(string key, IReadOnlyCollection<string> members)
+        {
+            if (members == null || members.Count == 0)
+                return Task.CompletedTask;
+            var values = new RedisValue[members.Count];
+            var i = 0;
+            foreach (var m in members)
+                values[i++] = m;
+            return redis.Value.GetDatabase().SetAddAsync(key, values);
+        }
+
+        /// <inheritdoc/>
+        public async Task<IReadOnlyList<string>> GetSetAsync(string key)
+        {
+            var values = await redis.Value.GetDatabase().SetMembersAsync(key).ConfigureAwait(false);
+            var result = new List<string>(values.Length);
+            foreach (var v in values)
+                result.Add(v.ToString());
+            return result;
+        }
+
+        /// <inheritdoc/>
+        public Task DeleteAsync(params string[] keys)
+        {
+            var redisKeys = new RedisKey[keys.Length];
+            for (var i = 0; i < keys.Length; i++)
+                redisKeys[i] = keys[i];
+            return redis.Value.GetDatabase().KeyDeleteAsync(redisKeys);
+        }
     }
 
     /// <summary>The Redis connection of the archive markers (not the service's <c>REDIS_HOST</c>, sky-auctions-redis is retired).</summary>

@@ -258,6 +258,17 @@ writes MariaDB** (its `DBConnection` is a read-only user): it writes R2 objects 
   (parts, rows, sold rows, sha256, source; read as a projection), `auction_tags` ids and `auction_locations` (superseded check).
   At start one cheap sentinel query verifies the connection; failures log
   `Auction archive: MariaDB (DBConnection) unavailable, retrying in 10 min` and retry every 10 minutes.
+- **Partition list:** the partition keys of `weekly_auctions_2` come from a token-range scan, because one
+  `SELECT DISTINCT tag, timekey` over the 925 GB table times out (production, 2026-10-23). The ring is cut into
+  `PARTITION_SCAN_RANGES` (default 4096) ranges, each read with a prepared
+  `SELECT DISTINCT tag, timekey ... WHERE token(tag, timekey) > ? AND token(tag, timekey) <= ? BYPASS CACHE` (LocalOne, 1000 keys
+  per page, `PAGE_PAUSE_MS` between ranges). A page that times out is retried up to `PAGE_RETRIES` times (2/4/8 s); a range that
+  still fails is halved, at most 8 times, before the pass fails. Only partitions that can overlap the months in scope are kept.
+  Progress lives in Redis (`auctions_archive:v2:partitions:found` set, `auctions_archive:v2:partitions:next_range` =
+  `{next}/{ranges}/{oldest}/{newest}`), so a restart continues with the next range; another range count or scope restarts.
+  When the last range is done the list is cached in R2 (`auctions/v2/_meta/scylla_partitions.msgpack.br`, reused for
+  `PARTITION_LIST_MAX_AGE_DAYS`) and the Redis progress is deleted. Gauges `sky_auctions_archive_partition_scan_ranges_done`
+  and `_partition_scan_found`, counters `_partition_scan_retries` and `_partition_scan_splits`; progress is logged every 256 ranges.
 - **Per tag-month:** phase-1 parts are read uncached (never rewritten). The Scylla partitions overlapping the month are paged
   (`LocalOne`, `PAGE_SIZE`, up to `PAGE_RETRIES` retries per page with 2/4/8 s backoff resuming from the same paging state), rows
   outside the month are skipped (End before 2019-06 counts as garbage), rows are deduped per auction uid (sold, then higher bid,
@@ -307,7 +318,7 @@ writes MariaDB** (its `DBConnection` is a read-only user): it writes R2 objects 
   `NEWEST_MONTH`, `PAGE_SIZE`, `PAGE_PAUSE_MS`, `PARTITION_PAUSE_MS`, `TAG_PAUSE_MS`, `MONTH_PAUSE_MS`, `IDLE_PAUSE_MINUTES`
   (pause between passes once the sweep is complete or while phase 1 is behind), `IMPORT_WAIT_MINUTES` (default 5, pause
   between passes while waiting for SkyIndexer to import the previous month), `MAX_ROWS_PER_PART`, `MAX_PART` (at most 254: `archived_months.parts` is
-  a tinyint count), `PAGE_RETRIES`, `CIRCUIT_BREAKER_FAILURES`, `CIRCUIT_BREAKER_PAUSE_MINUTES`, `PARTITION_LIST_MAX_AGE_DAYS`,
+  a tinyint count), `PAGE_RETRIES`, `CIRCUIT_BREAKER_FAILURES`, `CIRCUIT_BREAKER_PAUSE_MINUTES`, `PARTITION_LIST_MAX_AGE_DAYS`, `PARTITION_SCAN_RANGES`,
   `CROSSCHECK_LOG_LIMIT`, `REDIS_HOST` (empty = `SETTINGS_REDIS_HOST`). Needs `S3:ENABLED=true`, `S3:BUCKET_NAME`,
   `DBConnection` (read-only is enough) and Redis.
 - **Deletion from Scylla is a later step** and not part of this phase. A Scylla partition (tag, week) may be deleted once every

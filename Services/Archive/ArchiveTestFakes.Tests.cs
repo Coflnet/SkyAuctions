@@ -153,6 +153,7 @@ internal static class ArchiveTestConfig
             ["ARCHIVE:ENABLED"] = "true",
             ["ARCHIVE:OLDEST_MONTH"] = "2020-08",
             ["ARCHIVE:NEWEST_MONTH"] = "2020-09",
+            ["ARCHIVE:PARTITION_SCAN_RANGES"] = "8",
         };
         foreach (var (key, value) in values)
             dict[key] = value;
@@ -177,7 +178,7 @@ internal class InMemoryMarkers : IScyllaArchiveMarkers
     public readonly List<string> Events;
     /// <summary>Every call throws (Redis down).</summary>
     public bool Unavailable;
-    /// <summary>The next SetAsync throws (crash right before the marker).</summary>
+    /// <summary>The next SetAsync of a sweep marker throws (crash right before the marker).</summary>
     public bool FailNextSet;
     /// <summary>This many GetAsync calls throw before Redis answers again.</summary>
     public int FailingGets;
@@ -195,13 +196,44 @@ internal class InMemoryMarkers : IScyllaArchiveMarkers
     {
         if (Unavailable)
             throw new InvalidOperationException("redis down");
-        if (FailNextSet)
+        if (FailNextSet && !key.StartsWith(ScyllaArchiveMarkerKeys.PartitionScanPrefix, StringComparison.Ordinal))
         {
             FailNextSet = false;
             throw new TimeoutException("redis timeout");
         }
-        Events.Add("marker:" + key);
+        if (!key.StartsWith(ScyllaArchiveMarkerKeys.PartitionScanPrefix, StringComparison.Ordinal))
+            Events.Add("marker:" + key); // scan progress is bookkeeping, not a sweep marker
         Values[key] = value;
+        return Task.CompletedTask;
+    }
+
+    public readonly Dictionary<string, HashSet<string>> Sets = new();
+
+    public Task AddToSetAsync(string key, IReadOnlyCollection<string> members)
+    {
+        if (Unavailable)
+            throw new InvalidOperationException("redis down");
+        if (!Sets.TryGetValue(key, out var set))
+            Sets[key] = set = new HashSet<string>(StringComparer.Ordinal);
+        set.UnionWith(members);
+        return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyList<string>> GetSetAsync(string key)
+    {
+        if (Unavailable)
+            throw new InvalidOperationException("redis down");
+        IReadOnlyList<string> members = Sets.TryGetValue(key, out var set) ? set.ToList() : new List<string>();
+        return Task.FromResult(members);
+    }
+
+    public Task DeleteAsync(params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            Values.Remove(key);
+            Sets.Remove(key);
+        }
         return Task.CompletedTask;
     }
 }

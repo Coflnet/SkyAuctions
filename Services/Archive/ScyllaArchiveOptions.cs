@@ -35,6 +35,8 @@ namespace Coflnet.Sky.Auctions.Archive
         public int CircuitBreakerFailures { get; init; } = 5;
         public int CircuitBreakerPauseMinutes { get; init; } = 10;
         public int PartitionListMaxAgeDays { get; init; } = 30;
+        /// <summary>Token ranges the <c>SELECT DISTINCT tag, timekey</c> partition scan is split into (one full scan times out).</summary>
+        public int PartitionScanRanges { get; init; } = 4096;
         /// <summary>Cross-check mismatches logged per tag-month (all are counted).</summary>
         public int CrosscheckLogLimit { get; init; } = 5;
         /// <summary>Redis of the progress markers; empty = <c>SETTINGS_REDIS_HOST</c> (see <see cref="ScyllaArchiveRedis.ResolveHost"/>).</summary>
@@ -67,6 +69,7 @@ namespace Coflnet.Sky.Auctions.Archive
                 CircuitBreakerFailures = Math.Max(1, Int(s["CIRCUIT_BREAKER_FAILURES"], d.CircuitBreakerFailures)),
                 CircuitBreakerPauseMinutes = Int(s["CIRCUIT_BREAKER_PAUSE_MINUTES"], d.CircuitBreakerPauseMinutes),
                 PartitionListMaxAgeDays = Int(s["PARTITION_LIST_MAX_AGE_DAYS"], d.PartitionListMaxAgeDays),
+                PartitionScanRanges = Math.Max(1, Int(s["PARTITION_SCAN_RANGES"], d.PartitionScanRanges)),
                 CrosscheckLogLimit = Math.Max(0, Int(s["CROSSCHECK_LOG_LIMIT"], d.CrosscheckLogLimit)),
                 RedisHost = s["REDIS_HOST"] ?? d.RedisHost,
             };

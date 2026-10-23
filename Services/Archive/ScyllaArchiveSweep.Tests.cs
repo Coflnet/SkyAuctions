@@ -42,7 +42,8 @@ public class ScyllaArchiveSweepTests
         public int DatabaseChecks;
 
         public TestableScyllaArchiveSweep(InMemoryAuctionBlobStore store, InMemoryMarkers markers, IConfiguration config, ILogger<ScyllaArchiveSweep> logger)
-            : base(store, store, markers, null, config, logger) { }
+            : base(store, store, markers, null, config, logger)
+            => firstRange = ScyllaTokenRange.Split(ScyllaArchiveOptions.From(config).PartitionScanRanges)[0];
 
         protected override Task VerifyDatabaseAsync(CancellationToken cancellationToken)
         {
@@ -52,10 +53,33 @@ public class ScyllaArchiveSweepTests
             return Task.CompletedTask;
         }
 
-        protected override Task<List<(string Tag, short TimeKey)>> LoadPartitionListAsync(CancellationToken cancellationToken)
+        /// <summary>Stand-in for Murmur3: any stable 64-bit hash works, the scan only needs every partition in exactly one range.</summary>
+        public static long FakeToken((string Tag, short TimeKey) p)
         {
-            PartitionScans++;
-            return Task.FromResult(PartitionList.ToList());
+            var hash = 14695981039346656037UL;
+            foreach (var c in p.Tag + ":" + p.TimeKey)
+                hash = (hash ^ c) * 1099511628211UL;
+            return unchecked((long)hash);
+        }
+
+        public int FakePartitionPageSize = 3;
+        public readonly List<(ScyllaTokenRange range, int? state)> PartitionFetches = new();
+        /// <summary>Ranges answered with a ReadTimeoutException.</summary>
+        public Func<ScyllaTokenRange, bool> TimeoutRange;
+        private readonly ScyllaTokenRange firstRange;
+
+        protected override Task<(IReadOnlyList<(string Tag, short TimeKey)> Rows, byte[] Next)> FetchPartitionKeyPageAsync(ScyllaTokenRange range, byte[] pagingState, int pageSize, CancellationToken cancellationToken)
+        {
+            var index = pagingState == null ? 0 : BitConverter.ToInt32(pagingState);
+            PartitionFetches.Add((range, pagingState == null ? null : index));
+            if (range == firstRange && pagingState == null)
+                PartitionScans++;
+            if (TimeoutRange?.Invoke(range) == true)
+                throw new global::Cassandra.ReadTimeoutException(global::Cassandra.ConsistencyLevel.LocalOne, 0, 1, false);
+            var inRange = PartitionList.Where(p => range.Contains(FakeToken(p))).OrderBy(FakeToken).ToList();
+            IReadOnlyList<(string, short)> rows = inRange.Skip(index * FakePartitionPageSize).Take(FakePartitionPageSize).ToList();
+            var next = (index + 1) * FakePartitionPageSize < inRange.Count ? BitConverter.GetBytes(index + 1) : null;
+            return Task.FromResult((rows, next));
         }
 
         protected override Task<ScyllaMonthState> GetMonthStateAsync(int month, CancellationToken cancellationToken)
@@ -828,6 +852,113 @@ public class ScyllaArchiveSweepTests
 
         Assert.That(sweep.Delays.Count(d => d == TimeSpan.FromMinutes(10)), Is.EqualTo(1), "paused once after A and B, C alone does not trip it");
         Assert.That(log.Entries.Any(e => e.level == LogLevel.Warning && e.message.Contains("2 tag-months failed in a row")), Is.True);
+    }
+
+    /// <summary>In-scope (August/September 2020) and out-of-scope partitions of several tags.</summary>
+    private List<(string Tag, short TimeKey)> ManyPartitions()
+    {
+        var all = new List<(string, short)>();
+        foreach (var tag in new[] { Hyperion, Terminator, "ASPECT_OF_THE_END", "JUJU_SHORTBOW", "WITHER_SKULL" })
+            for (short key = 78; key <= 95; key++) // weeks 78-81 and 92-95 are outside 2020-08..2020-09
+                all.Add((tag, key));
+        for (short key = 1150; key <= 1300; key += 7)
+            all.Add(("ENCHANTED_BOOK", key));
+        all.Add(("ENCHANTED_BOOK", 5)); // random-timekey garbage
+        sweep.PartitionList.AddRange(all);
+        return all.Where(p => ScyllaArchiveRows.OverlapsMonths(p.Item1, p.Item2, Aug, Sep)).ToList();
+    }
+
+    [Test]
+    public async Task TokenRangeScan_CollectsEveryInScopePartitionExactlyOnce()
+    {
+        var expected = ManyPartitions();
+        var ranges = ScyllaTokenRange.Split(8);
+        Assert.That(sweep.PartitionList.All(p => ranges.Count(r => r.Contains(TestableScyllaArchiveSweep.FakeToken(p))) == 1), Is.True, "the ranges partition the ring");
+
+        var found = await sweep.ScanPartitionsAsync(Options(), CancellationToken.None);
+
+        Assert.That(found, Is.EquivalentTo(expected));
+        Assert.That(found.Distinct().Count(), Is.EqualTo(found.Count));
+        Assert.That(sweep.PartitionFetches.Where(f => f.state == null).Select(f => f.range), Is.EqualTo(ranges), "each range once, in order");
+        Assert.That(sweep.PartitionFetches.Any(f => f.state != null), Is.True, "pages beyond the first are fetched with their paging state");
+        Assert.That(markers.Values[ScyllaArchiveMarkerKeys.PartitionScanNext], Is.EqualTo("8/8/202008/202009"));
+        Assert.That(markers.Sets[ScyllaArchiveMarkerKeys.PartitionScanFound], Has.Count.EqualTo(expected.Count), "only in-scope entries are kept");
+        Assert.That(sweep.Delays.Count(d => d == TimeSpan.FromMilliseconds(100)), Is.EqualTo(7), "PAGE_PAUSE_MS between ranges");
+    }
+
+    [Test]
+    public async Task TimingOutRange_IsRetriedThenSplit()
+    {
+        var expected = ManyPartitions();
+        var ranges = ScyllaTokenRange.Split(8);
+        sweep.TimeoutRange = r => r == ranges[3];
+
+        var found = await sweep.ScanPartitionsAsync(Options(), CancellationToken.None);
+
+        Assert.That(found, Is.EquivalentTo(expected));
+        Assert.That(sweep.PartitionFetches.Count(f => f.range == ranges[3]), Is.EqualTo(4), "first attempt + PAGE_RETRIES (3)");
+        var (low, high) = ranges[3].Halve();
+        Assert.That(sweep.PartitionFetches.Any(f => f.range == low) && sweep.PartitionFetches.Any(f => f.range == high), Is.True, "both halves scanned");
+        Assert.That(sweep.Delays.SkipWhile(d => d != TimeSpan.FromSeconds(2)).Take(3), Is.EqualTo(new[] { TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(4), TimeSpan.FromSeconds(8) }));
+    }
+
+    [Test]
+    public async Task RangeThatKeepsTimingOut_FailsThePass_AndARestartResumesThere()
+    {
+        var expected = ManyPartitions();
+        var ranges = ScyllaTokenRange.Split(8);
+        var poison = TestableScyllaArchiveSweep.FakeToken(expected[expected.Count / 2]);
+        var poisonRange = Enumerable.Range(0, 8).Single(i => ranges[i].Contains(poison));
+        sweep.TimeoutRange = r => r.Contains(poison); // every half containing it times out as well
+
+        Assert.ThrowsAsync<InvalidOperationException>(() => sweep.GetPartitionsAsync(Now, Options(), CancellationToken.None));
+        Assert.That(markers.Values[ScyllaArchiveMarkerKeys.PartitionScanNext], Is.EqualTo($"{poisonRange}/8/202008/202009"));
+        Assert.That(store.Objects.ContainsKey(AuctionBlobKeys.Meta(ScyllaArchiveSweep.PartitionListKey)), Is.False, "no cache before the last range");
+        var halvings = sweep.PartitionFetches.Where(f => f.range.Contains(poison)).Select(f => f.range).Distinct().Count();
+        Assert.That(halvings, Is.EqualTo(ScyllaArchiveSweep.MaxRangeSplitDepth + 1));
+
+        // restart (new process): only the remaining ranges are read
+        var restarted = Sweep();
+        restarted.PartitionList.AddRange(sweep.PartitionList);
+        var list = await restarted.GetPartitionsAsync(Now, Options(), CancellationToken.None);
+
+        Assert.That(list, Is.EquivalentTo(expected));
+        Assert.That(restarted.PartitionFetches.Where(f => f.state == null).Select(f => f.range), Is.EqualTo(ranges.Skip(poisonRange)), "finished ranges are not read again");
+        Assert.That(store.Objects.ContainsKey(AuctionBlobKeys.Meta(ScyllaArchiveSweep.PartitionListKey)), Is.True, "cache written after the last range");
+        Assert.That(markers.Values.ContainsKey(ScyllaArchiveMarkerKeys.PartitionScanNext) || markers.Sets.ContainsKey(ScyllaArchiveMarkerKeys.PartitionScanFound), Is.False, "progress deleted once cached");
+        Assert.That(log.Entries.Any(e => e.message.Contains($"resuming the partition scan at range {poisonRange}/8")), Is.True);
+    }
+
+    [Test]
+    public async Task ChangedRangeCountOrMonths_RestartTheScan()
+    {
+        var expected = ManyPartitions();
+        markers.Values[ScyllaArchiveMarkerKeys.PartitionScanNext] = "6/16/202008/202009";
+        markers.Sets[ScyllaArchiveMarkerKeys.PartitionScanFound] = new HashSet<string> { "STALE:1" };
+
+        var found = await sweep.ScanPartitionsAsync(Options(), CancellationToken.None);
+
+        Assert.That(found, Is.EquivalentTo(expected), "stale progress of 16 ranges is dropped");
+        Assert.That(sweep.PartitionFetches.First().range, Is.EqualTo(ScyllaTokenRange.Split(8)[0]));
+        Assert.That(ScyllaArchiveMarkerKeys.ResumeRange("6/8/202008/202009", 8, Aug, Sep), Is.EqualTo(6));
+        Assert.That(ScyllaArchiveMarkerKeys.ResumeRange("6/8/202007/202009", 8, Aug, Sep), Is.Zero);
+        Assert.That(ScyllaArchiveMarkerKeys.ResumeRange(null, 8, Aug, Sep), Is.Zero);
+    }
+
+    [Test]
+    public void TokenRangesCoverTheRingContiguously()
+    {
+        var ranges = ScyllaTokenRange.Split(4096);
+        Assert.That(ranges[0], Is.EqualTo(new ScyllaTokenRange(long.MinValue, true, ranges[0].End)));
+        Assert.That(ranges[^1].End, Is.EqualTo(long.MaxValue));
+        for (var i = 1; i < ranges.Count; i++)
+            Assert.That((ranges[i].Start, ranges[i].StartInclusive), Is.EqualTo((ranges[i - 1].End, false)));
+        Assert.That(ranges[0].Contains(long.MinValue) && ranges[^1].Contains(long.MaxValue), Is.True);
+        var (low, high) = ranges[5].Halve();
+        Assert.That((low.Start, low.StartInclusive, low.End == high.Start, high.StartInclusive, high.End), Is.EqualTo((ranges[5].Start, false, true, false, ranges[5].End)));
+        Assert.That(ScyllaArchiveMarkerKeys.TryParsePartition(ScyllaArchiveMarkerKeys.Partition("A:B", -3), out var parsed) && parsed == ("A:B", (short)-3), Is.True);
+        Assert.That(ScyllaArchiveSweep.IsTransientScyllaError(new global::Cassandra.ReadTimeoutException(global::Cassandra.ConsistencyLevel.LocalOne, 0, 1, false)), Is.True);
+        Assert.That(ScyllaArchiveSweep.IsTransientScyllaError(new InvalidOperationException()), Is.False);
     }
 
     [Test]
