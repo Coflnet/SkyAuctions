@@ -82,6 +82,9 @@ namespace Coflnet.Sky.Auctions.Archive
         /// <summary><c>auctions_archive:v2:month:{yyyy-MM}</c> = iso time every tag of the month was done.</summary>
         public static string Month(int month) => Prefix + "month:" + ArchiveMonths.Format(month);
 
+        /// <summary><c>auctions_archive:v2:redo:{yyyy-MM}</c>: set by the operator (any value) to have the sweep archive the month again.</summary>
+        public static string Redo(int month) => Prefix + "redo:" + ArchiveMonths.Format(month);
+
         /// <summary><c>archived:{scyllaOnlyRows}:{newParts}:{iso}</c></summary>
         public static string Archived(int scyllaOnlyRows, int newParts, DateTime at) => FormattableString.Invariant($"archived:{scyllaOnlyRows}:{newParts}:{Iso(at)}");
 

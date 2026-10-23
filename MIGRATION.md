@@ -336,6 +336,24 @@ writes MariaDB** (its `DBConnection` is a read-only user): it writes R2 objects 
   a tinyint count), `PAGE_RETRIES`, `CIRCUIT_BREAKER_FAILURES`, `CIRCUIT_BREAKER_PAUSE_MINUTES`, `PARTITION_LIST_MAX_AGE_DAYS`, `PARTITION_SCAN_RANGES`,
   `CROSSCHECK_LOG_LIMIT`, `REDIS_HOST` (empty = `SETTINGS_REDIS_HOST`). Needs `S3:ENABLED=true`, `S3:BUCKET_NAME`,
   `DBConnection` (read-only is enough) and Redis.
+- **Redo a month** (e.g. 2019-11 swept before the `unknown` remap existed). SkyAuctions' MariaDB user is read-only, so the operator
+  deletes the MariaDB index rows and the sweep coordinates through a Redis key:
+  1. `SET auctions_archive:v2:redo:2019-11 1` on sky-settings-redis.
+  2. On its next pass the sweep reaches the month (oldest to newest) and first resets the R2 side: deletes the tag-month markers
+     (manifest tags plus every tag with a partition in the month) and the month marker, and rewrites the manifest with no tags and
+     `CompletedAt = null`. It then logs `redo of 2019-11 waits for the MariaDB reset: run ...` (warning, once per process and month),
+     sets `sky_auctions_archive_redo_waiting_month` and ends the pass; nothing later is swept.
+  3. Run the three statements from that log line: `DELETE FROM auction_locations WHERE month = {idx}; DELETE FROM archived_months
+     WHERE month = {idx} AND tag_id <> 0; UPDATE archived_months SET scylla_at = NULL WHERE month = {idx} AND tag_id = 0;`.
+     `auction_locations` has only its `uid` primary key, so the first DELETE scans the table; for millions of rows delete in
+     batches (`DELETE FROM auction_locations WHERE month = {idx} LIMIT 200000;` until 0 rows affected) to keep lock time short.
+  4. The next pass finds the MariaDB state clean (sentinel without `scylla_at`, no tag rows, no locations), deletes the redo key and
+     sweeps the month from scratch (including the `unknown` pre-scan/remap); the completed manifest makes SkyIndexer re-import it.
+  **Why the order matters:** if the SQL ran first, SkyIndexer (polling every 5 minutes) could see a sentinel without `scylla_at`
+  and the still-completed stale manifest and re-import it. The sweep therefore empties and un-completes the manifest before it
+  accepts the MariaDB state as reset. A redo key for a month outside `OLDEST_MONTH..NEWEST_MONTH` (checked +-24 months) is logged
+  and deleted. A redo on a finished sweep clears `sweep_complete` and walks the months again. The old parts stay in R2
+  unreferenced (the tag index and manifest point only at the new ones).
 - **Deletion from Scylla is a later step** and not part of this phase. A Scylla partition (tag, week) may be deleted once every
   month it overlaps has `scylla_at` on its sentinel.
 

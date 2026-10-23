@@ -96,6 +96,16 @@ public class ScyllaArchiveSweepTests
             return Task.FromResult(new ScyllaMonthState(found, sentinel?.ScyllaAt));
         }
 
+        /// <summary>What the operator's MariaDB reset looks like to the redo wait (sentinel imported, tag rows, location rows).</summary>
+        public (bool SentinelImported, int TagRows, bool HasLocations) RedoState = (true, 2, true);
+        public int RedoStateReads;
+
+        protected override Task<(bool SentinelImported, int TagRows, bool HasLocations)> GetRedoStateAsync(int month, CancellationToken cancellationToken)
+        {
+            RedoStateReads++;
+            return Task.FromResult(RedoState);
+        }
+
         protected override Task<ushort?> GetTagIdAsync(string tag, CancellationToken cancellationToken)
             => Task.FromResult(Tags.TryGetValue(tag, out var id) ? (ushort?)id : null);
 
@@ -1081,5 +1091,93 @@ public class ScyllaArchiveSweepTests
 
         Assert.That(PartRows(Terminator, Sep, 0), Is.Null, "already marked, not written again");
         Assert.That(PartRows(Hyperion, Sep, 0).Select(r => (r.UId, r.HighestBidAmount)), Is.EqualTo(new[] { (20L, 5L) }));
+    }
+
+    private static DateTime InAug(int day) => new(2020, 8, day, 12, 0, 0, DateTimeKind.Utc);
+
+    /// <summary>August fully swept and imported (two tags), September not started; operator asked for a redo of August.</summary>
+    private async Task SweptAndImportedAugustWithRedoRequested()
+    {
+        Sentinel(Aug);
+        Sentinel(Sep);
+        AddScylla(Scylla(1, InAug(3)), Scylla(2, InAug(4), tag: Terminator), Scylla(3, InSep(3)));
+        Assert.That(await sweep.Run(), Is.EqualTo(1));
+        Imported(Aug);
+        Assert.That(Manifest(Aug).Tags.Count, Is.EqualTo(2));
+        Assert.That(Manifest(Aug).CompletedAt, Is.Not.Null);
+        markers.Values[ScyllaArchiveMarkerKeys.Redo(Aug)] = "1";
+        events.Clear();
+    }
+
+    [Test]
+    public async Task Redo_ResetsManifestAndMarkers_ThenWaitsForMariaDbReset()
+    {
+        await SweptAndImportedAugustWithRedoRequested();
+        sweep.Fetches.Clear();
+
+        Assert.That(await sweep.Run(), Is.Zero);
+
+        Assert.That(markers.Values.ContainsKey(ScyllaArchiveMarkerKeys.TagMonth(Hyperion, Aug)), Is.False);
+        Assert.That(markers.Values.ContainsKey(ScyllaArchiveMarkerKeys.TagMonth(Terminator, Aug)), Is.False);
+        Assert.That(markers.Values.ContainsKey(ScyllaArchiveMarkerKeys.Month(Aug)), Is.False);
+        Assert.That(Manifest(Aug).Tags, Is.Empty);
+        Assert.That(Manifest(Aug).CompletedAt, Is.Null, "the importer must not see a completed stale manifest");
+        Assert.That(markers.Values.ContainsKey(ScyllaArchiveMarkerKeys.Redo(Aug)), Is.True);
+        Assert.That(sweep.Fetches, Is.Empty, "no tag swept");
+        Assert.That(Manifest(Sep), Is.Null, "the pass ended at August");
+        Assert.That(log.Entries.Any(e => e.message.Contains("redo of 2020-08 requested; manifest and markers reset (2 tag entries removed)")), Is.True);
+        Assert.That(log.Entries.Count(e => e.level == LogLevel.Warning && e.message.Contains("redo of 2020-08 waits for the MariaDB reset") && e.message.Contains("DELETE FROM auction_locations WHERE month = ")), Is.EqualTo(1));
+        Assert.That(sweep.PauseAfterPass(Options()), Is.EqualTo(TimeSpan.FromMinutes(Options().ImportWaitMinutes)));
+
+        await sweep.Run();
+        Assert.That(log.Entries.Count(e => e.message.Contains("waits for the MariaDB reset")), Is.EqualTo(1), "warned once");
+    }
+
+    [Test]
+    public async Task Redo_WhenMariaDbClean_DeletesKeyAndResweepsMonth()
+    {
+        await SweptAndImportedAugustWithRedoRequested();
+        sweep.RedoState = (false, 0, false);
+        sweep.Sentinel(Aug).ScyllaAt = null;
+
+        Assert.That(await sweep.Run(), Is.EqualTo(1));
+
+        Assert.That(markers.Values.ContainsKey(ScyllaArchiveMarkerKeys.Redo(Aug)), Is.False);
+        Assert.That(log.Entries.Any(e => e.message.Contains("redo of 2020-08 starts")), Is.True);
+        Assert.That(events.Any(e => e.StartsWith($"write:{Hyperion}")), Is.True, "parts written again");
+        Assert.That(Manifest(Aug).Tags.Select(t => t.Tag), Is.EqualTo(new[] { Hyperion, Terminator }));
+        Assert.That(Manifest(Aug).CompletedAt, Is.Not.Null);
+        Assert.That(markers.Values[ScyllaArchiveMarkerKeys.TagMonth(Hyperion, Aug)], Does.StartWith("archived:"));
+        Assert.That(markers.Values.ContainsKey(ScyllaArchiveMarkerKeys.Month(Aug)), Is.True);
+    }
+
+    [Test]
+    public async Task Redo_IsIdempotent_OnAlreadyResetManifest()
+    {
+        await SweptAndImportedAugustWithRedoRequested();
+        await sweep.Run();
+        events.Clear();
+
+        Assert.That(async () => await sweep.Run(), Throws.Nothing);
+
+        Assert.That(events.Any(e => e.StartsWith("meta:")), Is.False, "the reset manifest is not written again");
+        Assert.That(Manifest(Aug).Tags, Is.Empty);
+        Assert.That(Manifest(Aug).CompletedAt, Is.Null);
+        Assert.That(log.Entries.Count(e => e.message.Contains("manifest and markers reset")), Is.EqualTo(1));
+        Assert.That(markers.Values.ContainsKey(ScyllaArchiveMarkerKeys.Redo(Aug)), Is.True);
+    }
+
+    [Test]
+    public async Task Redo_OutsideConfiguredRange_IsIgnoredAndKeyDeleted()
+    {
+        Sentinel(Aug);
+        var outside = ScyllaArchiveMarkerKeys.Redo(201912);
+        markers.Values[outside] = "1";
+
+        await sweep.Run();
+
+        Assert.That(markers.Values.ContainsKey(outside), Is.False);
+        Assert.That(log.Entries.Any(e => e.level == LogLevel.Warning && e.message.Contains("redo of 2019-12 requested but it is outside")), Is.True);
+        Assert.That(sweep.RedoStateReads, Is.Zero);
     }
 }

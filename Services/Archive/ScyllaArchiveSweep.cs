@@ -124,6 +124,8 @@ namespace Coflnet.Sky.Auctions.Archive
         private bool completeLogged;
         private int? waitingLoggedFor;
         private bool lastPassWaitingForImport;
+        private int? redoResetLoggedFor;
+        private int? redoWaitLoggedFor;
         private PreparedStatement firstRangeStatement;
         private PreparedStatement rangeStatement;
         private ItemNameTagResolver nameResolver;
@@ -154,6 +156,7 @@ namespace Coflnet.Sky.Auctions.Archive
         private static readonly Prometheus.Gauge partitionScanFound = Prometheus.Metrics.CreateGauge("sky_auctions_archive_partition_scan_found", "In-scope partitions found by the current partition scan");
         private static readonly Prometheus.Gauge partitionsKnown = Prometheus.Metrics.CreateGauge("sky_auctions_archive_partitions_known", "Scylla partitions in the swept months");
         private static readonly Prometheus.Gauge lastMonthCompleted = Prometheus.Metrics.CreateGauge("sky_auctions_archive_last_month_completed_timestamp", "Unix time the sweep last finished a month (manifest completed, month marker set)");
+        private static readonly Prometheus.Gauge redoWaiting = Prometheus.Metrics.CreateGauge("sky_auctions_archive_redo_waiting_month", "Month (yyyyMM) whose redo waits for the operator to reset its MariaDB rows, 0 when not waiting");
         private static readonly Prometheus.Gauge waitingForImport = Prometheus.Metrics.CreateGauge("sky_auctions_archive_waiting_for_import_month", "Month (yyyyMM) the sweep waits for SkyIndexer to import, 0 when not waiting");
 
         /// <summary>DI constructor.</summary>
@@ -262,14 +265,28 @@ namespace Coflnet.Sky.Auctions.Archive
             var options = ScyllaArchiveOptions.From(config);
             lastPassWaitingForImport = false;
             nameResolver = null; // reloaded (lazily) once per pass
+            await DropOutOfRangeRedoKeysAsync(options).ConfigureAwait(false);
             if (await markers.GetAsync(ScyllaArchiveMarkerKeys.SweepComplete).ConfigureAwait(false) != null)
             {
-                LogCompleteOnce(options);
-                return 0;
+                if (!await AnyRedoRequestedAsync(options).ConfigureAwait(false))
+                {
+                    LogCompleteOnce(options);
+                    return 0;
+                }
+                // a redo of a month of a finished sweep: walk the months again (imported ones are skipped)
+                await markers.DeleteAsync(ScyllaArchiveMarkerKeys.SweepComplete).ConfigureAwait(false);
+                completeLogged = false;
             }
+            redoWaiting.Set(0);
             for (var month = options.OldestMonth; month <= options.NewestMonth; month = ArchiveMonths.Next(month))
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (await markers.GetAsync(ScyllaArchiveMarkerKeys.Redo(month)).ConfigureAwait(false) != null
+                    && !await PrepareRedoAsync(month, nowUtc, options, cancellationToken).ConfigureAwait(false))
+                {
+                    lastPassWaitingForImport = true;
+                    return 0;
+                }
                 var state = await GetMonthStateAsync(month, cancellationToken).ConfigureAwait(false);
                 if (state.ScyllaAt != null)
                     continue;
@@ -303,6 +320,106 @@ namespace Coflnet.Sky.Auctions.Archive
             await markers.SetAsync(ScyllaArchiveMarkerKeys.SweepComplete, ScyllaArchiveMarkerKeys.Iso(DateTime.UtcNow)).ConfigureAwait(false);
             LogCompleteOnce(options);
             return 0;
+        }
+
+        private async Task<bool> AnyRedoRequestedAsync(ScyllaArchiveOptions options)
+        {
+            for (var month = options.OldestMonth; month <= options.NewestMonth; month = ArchiveMonths.Next(month))
+                if (await markers.GetAsync(ScyllaArchiveMarkerKeys.Redo(month)).ConfigureAwait(false) != null)
+                    return true;
+            return false;
+        }
+
+        /// <summary>Months checked on each side of the configured range for a stray redo key.</summary>
+        private const int RedoStrayWindowMonths = 24;
+
+        /// <summary>A redo key for a month outside OLDEST..NEWEST can never be served: warn and delete it (checks a window around the range).</summary>
+        private async Task DropOutOfRangeRedoKeysAsync(ScyllaArchiveOptions options)
+        {
+            var before = options.OldestMonth;
+            for (var i = 0; i < RedoStrayWindowMonths; i++)
+                before = before % 100 == 1 ? (before / 100 - 1) * 100 + 12 : before - 1;
+            var end = options.NewestMonth;
+            for (var i = 0; i < RedoStrayWindowMonths; i++)
+                end = ArchiveMonths.Next(end);
+            for (var month = before; month <= end; month = ArchiveMonths.Next(month))
+            {
+                if (month == options.OldestMonth)
+                {
+                    month = options.NewestMonth;
+                    continue;
+                }
+                if (await markers.GetAsync(ScyllaArchiveMarkerKeys.Redo(month)).ConfigureAwait(false) == null)
+                    continue;
+                logger.LogWarning("Scylla archive: redo of {Month} requested but it is outside {Oldest}..{Newest}; ignoring and deleting the key",
+                    ArchiveMonths.Format(month), ArchiveMonths.Format(options.OldestMonth), ArchiveMonths.Format(options.NewestMonth));
+                await markers.DeleteAsync(ScyllaArchiveMarkerKeys.Redo(month)).ConfigureAwait(false);
+            }
+        }
+
+        /// <summary>
+        /// Operator-triggered redo of a month. First resets the R2 side (tag-month and month markers, manifest tags and completion) so
+        /// SkyIndexer cannot import the stale manifest, then waits until the operator reset the month's MariaDB rows. True when the
+        /// month may be swept again (redo key deleted); false while the MariaDB reset is pending (the pass ends).
+        /// </summary>
+        private async Task<bool> PrepareRedoAsync(int month, DateTime nowUtc, ScyllaArchiveOptions options, CancellationToken cancellationToken)
+        {
+            var monthText = ArchiveMonths.Format(month);
+            var (manifest, _) = await meta.ReadMetaVersionedAsync<ScyllaMonthManifest>(AuctionBlobKeys.ScyllaManifest(month), cancellationToken).ConfigureAwait(false);
+            var tags = new HashSet<string>(manifest?.Tags.Select(t => t.Tag) ?? Enumerable.Empty<string>(), StringComparer.Ordinal);
+            // tag-months without manifest entry (empty / overlap-only) carry markers too, and a retagged row needs its tag unmarked
+            var partitions = await GetPartitionsAsync(nowUtc, options, cancellationToken).ConfigureAwait(false);
+            var byTag = partitions.GroupBy(p => p.Tag, StringComparer.Ordinal)
+                .ToDictionary(g => g.Key, g => g.Select(p => p.TimeKey).Distinct().ToList(), StringComparer.Ordinal);
+            foreach (var (tag, _) in TagsOfMonth(byTag, month))
+                tags.Add(tag);
+            var keys = tags.Select(t => ScyllaArchiveMarkerKeys.TagMonth(t, month)).Append(ScyllaArchiveMarkerKeys.Month(month)).ToArray();
+            await markers.DeleteAsync(keys).ConfigureAwait(false);
+            if (manifest != null && (manifest.Tags.Count > 0 || manifest.CompletedAt != null))
+            {
+                var removed = manifest.Tags.Count;
+                var error = await UpdateManifestAsync(month, m => { m.Tags.Clear(); m.CompletedAt = null; }, cancellationToken).ConfigureAwait(false);
+                if (error != null)
+                    throw new InvalidOperationException($"Scylla archive: redo of {monthText} could not reset the manifest: {error}");
+                if (redoResetLoggedFor != month)
+                    logger.LogInformation("Scylla archive: redo of {Month} requested; manifest and markers reset ({Tags} tag entries removed)", monthText, removed);
+            }
+            redoResetLoggedFor = month;
+
+            var (sentinelImported, tagRows, hasLocations) = await GetRedoStateAsync(month, cancellationToken).ConfigureAwait(false);
+            if (sentinelImported || tagRows > 0 || hasLocations)
+            {
+                var idx = ArchiveMonths.ToIndex(month);
+                redoWaiting.Set(month);
+                if (redoWaitLoggedFor != month)
+                {
+                    redoWaitLoggedFor = month;
+                    logger.LogWarning("Scylla archive: redo of {Month} waits for the MariaDB reset: run `DELETE FROM auction_locations WHERE month = {Idx}; DELETE FROM archived_months WHERE month = {Idx} AND tag_id <> 0; UPDATE archived_months SET scylla_at = NULL WHERE month = {Idx} AND tag_id = 0;` (currently {TagRows} tag rows, locations present: {HasLocations}, sentinel imported: {SentinelImported})",
+                        monthText, idx, idx, idx, tagRows, hasLocations, sentinelImported);
+                }
+                return false;
+            }
+            await markers.DeleteAsync(ScyllaArchiveMarkerKeys.Redo(month)).ConfigureAwait(false);
+            redoWaiting.Set(0);
+            redoResetLoggedFor = null;
+            redoWaitLoggedFor = null;
+            waitingLoggedFor = null;
+            logger.LogInformation("Scylla archive: redo of {Month} starts", monthText);
+            return true;
+        }
+
+        /// <summary>
+        /// Whether the operator reset the MariaDB side of a month for a redo: sentinel imported (<c>scylla_at</c>), number of tag rows
+        /// (<c>tag_id &lt;&gt; 0</c>) and of <c>auction_locations</c> rows of the month. Read only.
+        /// </summary>
+        protected virtual async Task<(bool SentinelImported, int TagRows, bool HasLocations)> GetRedoStateAsync(int month, CancellationToken cancellationToken)
+        {
+            var index = ArchiveMonths.ToIndex(month);
+            using var db = new ArchiveContext();
+            var imported = await db.ArchivedMonths.AsNoTracking().AnyAsync(m => m.TagId == 0 && m.Month == index && m.ScyllaAt != null, cancellationToken).ConfigureAwait(false);
+            var tagRows = await db.ArchivedMonths.AsNoTracking().CountAsync(m => m.TagId != 0 && m.Month == index, cancellationToken).ConfigureAwait(false);
+            var locations = await db.AuctionLocations.AsNoTracking().AnyAsync(l => l.Month == index, cancellationToken).ConfigureAwait(false); // EXISTS, not COUNT: auction_locations has no month index
+            return (imported, tagRows, locations);
         }
 
         /// <summary>
