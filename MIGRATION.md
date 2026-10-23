@@ -312,3 +312,19 @@ writes MariaDB** (its `DBConnection` is a read-only user): it writes R2 objects 
   `DBConnection` (read-only is enough) and Redis.
 - **Deletion from Scylla is a later step** and not part of this phase. A Scylla partition (tag, week) may be deleted once every
   month it overlaps has `scylla_at` on its sentinel.
+
+## Read side (v2 blobs)
+
+`Controllers/ArchiveV2Controller.cs` (public like the other controllers, registered with `S3:ENABLED`, 503 otherwise) serves the
+v2 archive through the core `Coflnet.Sky.Core.Archive.ArchivedAuctionReader` (R2 via `S3AuctionBlobStore`, MariaDB read only via
+`ArchiveContext`/`DBConnection`). Read only; nothing is written anywhere.
+
+- `GET /api/archive/v2/{tag}/months`: the tag index (`month`, `parts`, `rows`, `soldRows`, `source`, `verifiedAt`), 404 without index.
+- `GET /api/archive/v2/{tag}/{yyyy-MM}?endFrom=&endTo=&sold=&bin=&minPrice=&maxPrice=&auctioneer=&itemName=&limit=&desc=&includeItemBytes=`:
+  `ArchivedAuctionDto`s sorted by End (parts are merged, phase-2 parts overlap phase-1 ones); limit 200 by default, at most 5000.
+  Price = highest bid when sold, starting bid otherwise.
+- `GET /api/archive/v2/{tag}/{yyyy-MM}/export?format=csv|jsonl&...`: same filters, streamed, at most 100000 rows (`ArchiveExport`).
+- `GET /api/archive/v2/auction/{uuid}`: one `auction_locations` read + one block read, with bids; 404 when not archived.
+- `GET /api/archive/v2/player/{bidderId}/bids?fromMonth=&toMonth=&limit=`: via `auction_bidders`, each block read once.
+- `GET /api/archive/v2/verify/{tag}/{yyyy-MM}`: uncached read of every part, recomputed SHA-256 against the tag index and
+  `archived_months.sha256` (over the parts the row counts; phase-2 parts only after SkyIndexer imported them).

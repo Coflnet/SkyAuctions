@@ -180,9 +180,13 @@ public class Startup
             services.AddSingleton<Archive.S3AuctionBlobStore>();
             services.AddSingleton<Coflnet.Sky.Core.Archive.IAuctionBlobStore>(p => p.GetRequiredService<Archive.S3AuctionBlobStore>());
             services.AddSingleton<Coflnet.Sky.Core.Archive.IArchiveMetaStore>(p => p.GetRequiredService<Archive.S3AuctionBlobStore>());
+            // ArchiveContext reads DBConnection/DBVersion (read-only user is enough) for the read side and the sweep
+            Coflnet.Sky.Core.Archive.ArchiveContext.SetConfiguration(Configuration);
+            // Auction archive v2 read side (/api/archive/v2/..., Controllers/ArchiveV2Controller.cs): R2 blocks + read-only MariaDB index tables
+            Coflnet.Sky.Core.Archive.ArchivedAuctionReaderServiceCollectionExtensions.AddArchivedAuctionReader(services);
+            services.AddSingleton<Archive.ArchiveReadService>();
             if (Configuration.GetValue<bool>("ARCHIVE:ENABLED"))
             {
-                Coflnet.Sky.Core.Archive.ArchiveContext.SetConfiguration(Configuration);
                 // own multiplexer: the service's REDIS_HOST (sky-auctions-redis) is retired
                 services.AddKeyedSingleton<IConnectionMultiplexer>(Archive.ScyllaArchiveRedis.ServiceKey, (_, _) => Archive.ScyllaArchiveRedis.Connect(Configuration));
                 services.AddSingleton<Archive.IScyllaArchiveMarkers>(p => new Archive.RedisScyllaArchiveMarkers(
