@@ -126,6 +126,9 @@ namespace Coflnet.Sky.Auctions.Archive
         private bool lastPassWaitingForImport;
         private PreparedStatement firstRangeStatement;
         private PreparedStatement rangeStatement;
+        private ItemNameTagResolver nameResolver;
+        /// <summary>Scylla tag whose rows are remapped to a real tag by item name.</summary>
+        internal const string UnknownTag = "unknown";
 
         private static readonly Prometheus.Counter tagMonthsTotal = Prometheus.Metrics.CreateCounter("sky_auctions_archive_tag_months_total", "Tag-months finished by the Scylla sweep (archived, nothing new or empty)");
         private static readonly Prometheus.Counter tagMonthsEmpty = Prometheus.Metrics.CreateCounter("sky_auctions_archive_tag_months_empty", "Tag-months without phase-1 row and without Scylla rows");
@@ -138,6 +141,8 @@ namespace Coflnet.Sky.Auctions.Archive
         private static readonly Prometheus.Counter rowsSkippedBogusEnd = Prometheus.Metrics.CreateCounter("sky_auctions_archive_rows_skipped_bogus_end", "Scylla rows ending before 2019-06 (random-timekey garbage)");
         private static readonly Prometheus.Counter crosscheckRows = Prometheus.Metrics.CreateCounter("sky_auctions_archive_crosscheck_rows", "Overlapping rows compared with phase 1");
         private static readonly Prometheus.Counter crosscheckMismatches = Prometheus.Metrics.CreateCounter("sky_auctions_archive_crosscheck_mismatches", "Overlapping rows whose field differs from phase 1", "field");
+        private static readonly Prometheus.Counter rowsRetagged = Prometheus.Metrics.CreateCounter("sky_auctions_archive_retagged_rows", "Rows of the Scylla tag unknown moved to the tag their item name resolves to");
+        private static readonly Prometheus.Counter rowsUnresolved = Prometheus.Metrics.CreateCounter("sky_auctions_archive_unresolved_rows", "Rows of the Scylla tag unknown whose item name does not resolve to exactly one tag (kept under unknown)");
         private static readonly Prometheus.Counter pages = Prometheus.Metrics.CreateCounter("sky_auctions_archive_pages", "Scylla pages read");
         private static readonly Prometheus.Counter partitionsRead = Prometheus.Metrics.CreateCounter("sky_auctions_archive_partitions_read", "Scylla partitions read completely");
         private static readonly Prometheus.Counter pageRetries = Prometheus.Metrics.CreateCounter("sky_auctions_archive_page_retries", "Scylla page retries");
@@ -256,6 +261,7 @@ namespace Coflnet.Sky.Auctions.Archive
         {
             var options = ScyllaArchiveOptions.From(config);
             lastPassWaitingForImport = false;
+            nameResolver = null; // reloaded (lazily) once per pass
             if (await markers.GetAsync(ScyllaArchiveMarkerKeys.SweepComplete).ConfigureAwait(false) != null)
             {
                 LogCompleteOnce(options);
@@ -335,6 +341,111 @@ namespace Coflnet.Sky.Auctions.Archive
                 .ToDictionary(g => g.Key, g => g.Select(p => p.TimeKey).Distinct().OrderBy(k => k).ToList(), StringComparer.Ordinal);
             currentMonth.Set(month);
             var tags = TagsOfMonth(byTag, month);
+            RetagSpill retag = null;
+            try
+            {
+                var unknownKeys = tags.FirstOrDefault(t => t.Tag == UnknownTag).TimeKeys;
+                if (unknownKeys != null && await markers.GetAsync(ScyllaArchiveMarkerKeys.TagMonth(UnknownTag, month)).ConfigureAwait(false) == null)
+                {
+                    try
+                    {
+                        retag = await PreScanUnknownAsync(month, unknownKeys, options, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        errors.Inc();
+                        logger.LogError(ex, "Scylla archive: pre-scan of the unknown rows of {Month} failed; retried next pass", monthText);
+                        return false;
+                    }
+                    var known = tags.Select(t => t.Tag).ToHashSet(StringComparer.Ordinal);
+                    foreach (var resolved in retag.Tags)
+                        if (!known.Contains(resolved))
+                            tags.Add((resolved, new List<short>()));
+                    tags = tags.OrderBy(t => t.Tag, StringComparer.Ordinal).ToList();
+                }
+                return await SweepTagsAsync(month, tags, retag, options, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                retag?.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// Page every <c>unknown</c> partition of the month once and spill the rows whose item name resolves to a tag (grouped by that tag).
+        /// Rows outside the month or ending before 2019-06 are not spilled (the normal tag-month would skip them as well); rows whose
+        /// resolved tag already has its marker are dropped, that tag-month received them in an earlier pass.
+        /// </summary>
+        private async Task<RetagSpill> PreScanUnknownAsync(int month, IReadOnlyList<short> timeKeys, ScyllaArchiveOptions options, CancellationToken cancellationToken)
+        {
+            var monthText = ArchiveMonths.Format(month);
+            nameResolver ??= await LoadNameResolverAsync(cancellationToken).ConfigureAwait(false);
+            var spill = new RetagSpill(month);
+            try
+            {
+                var markedTags = new Dictionary<string, bool>(StringComparer.Ordinal);
+                var unresolvedNames = new Dictionary<string, int>(StringComparer.Ordinal);
+                var resolved = 0;
+                var unresolved = 0;
+                var resolvedTags = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var timeKey in timeKeys)
+                {
+                    await foreach (var page in ReadPartitionPagesAsync(UnknownTag, timeKey, options, cancellationToken).ConfigureAwait(false))
+                    {
+                        foreach (var scyllaRow in page)
+                        {
+                            var end = ScyllaArchiveRows.EndOf(scyllaRow);
+                            if (end < ScyllaArchiveRows.BogusEndBefore || ArchiveMonths.MonthOf(end) != month)
+                                continue;
+                            if (!nameResolver.TryResolve(scyllaRow.ItemName, out var resolvedTag))
+                            {
+                                unresolved++;
+                                var key = ItemNameTagResolver.Normalise(scyllaRow.ItemName) ?? "(empty)";
+                                unresolvedNames[key] = unresolvedNames.GetValueOrDefault(key) + 1;
+                                continue;
+                            }
+                            resolved++;
+                            resolvedTags.Add(resolvedTag);
+                            if (!markedTags.TryGetValue(resolvedTag, out var marked))
+                                markedTags[resolvedTag] = marked = await markers.GetAsync(ScyllaArchiveMarkerKeys.TagMonth(resolvedTag, month)).ConfigureAwait(false) != null;
+                            if (marked)
+                                continue;
+                            var (mapped, extras) = ScyllaArchiveRows.Map(scyllaRow, resolvedTag, WarnUnknownValue);
+                            spill.Add(mapped, extras, Fingerprint.Of(scyllaRow));
+                        }
+                        await Delay(TimeSpan.FromMilliseconds(options.PagePauseMs), cancellationToken).ConfigureAwait(false);
+                    }
+                    partitionsRead.Inc();
+                    await Delay(TimeSpan.FromMilliseconds(options.PartitionPauseMs), cancellationToken).ConfigureAwait(false);
+                }
+                rowsRetagged.Inc(resolved);
+                rowsUnresolved.Inc(unresolved);
+                var top = string.Join(", ", unresolvedNames.OrderByDescending(n => n.Value).ThenBy(n => n.Key, StringComparer.Ordinal).Take(15).Select(n => $"{n.Key} ({n.Value})"));
+                logger.LogInformation("Scylla archive: {Month} unknown rows: {Resolved} retagged to {Tags} tags, {Unresolved} kept; top unresolved names: {Names}",
+                    monthText, resolved, resolvedTags.Count, unresolved, top);
+                return spill;
+            }
+            catch
+            {
+                spill.Dispose();
+                throw;
+            }
+        }
+
+        /// <summary>Loads the item-name resolver (Items and AltItemNames, read only); a seam for tests.</summary>
+        protected virtual async Task<ItemNameTagResolver> LoadNameResolverAsync(CancellationToken cancellationToken)
+        {
+            using var db = new HypixelContext();
+            return await ItemNameTagResolver.LoadAsync(db, cancellationToken).ConfigureAwait(false);
+        }
+
+        private async Task<bool> SweepTagsAsync(int month, List<(string Tag, List<short> TimeKeys)> tags, RetagSpill retag, ScyllaArchiveOptions options, CancellationToken cancellationToken)
+        {
+            var monthText = ArchiveMonths.Format(month);
             logger.LogInformation("Scylla archive: sweeping {Month} ({Tags} tags)", monthText, tags.Count);
             var monthComplete = true;
             var failedTags = 0;
@@ -350,7 +461,7 @@ namespace Coflnet.Sky.Auctions.Archive
                 TagMonthOutcome outcome;
                 try
                 {
-                    outcome = await ProcessTagMonthAsync(tag, month, row, timeKeys, options, cancellationToken).ConfigureAwait(false);
+                    outcome = await ProcessTagMonthAsync(tag, month, row, timeKeys, options, cancellationToken, retag?.ReadTag(tag)).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -637,7 +748,8 @@ namespace Coflnet.Sky.Auctions.Archive
         }
 
         /// <summary>Sweep one tag-month (see the class summary). Never throws for data problems; returns <see cref="TagMonthResult.Failed"/>.</summary>
-        internal async Task<TagMonthOutcome> ProcessTagMonthAsync(string tag, int month, ArchivedMonth row, IReadOnlyList<short> timeKeys, ScyllaArchiveOptions options, CancellationToken cancellationToken)
+        internal async Task<TagMonthOutcome> ProcessTagMonthAsync(string tag, int month, ArchivedMonth row, IReadOnlyList<short> timeKeys, ScyllaArchiveOptions options, CancellationToken cancellationToken,
+            IEnumerable<(SaveAuction Row, ScyllaAuctionExtras Extras, Fingerprint Fp)> retagged = null)
         {
             var outcome = new TagMonthOutcome { Tag = tag, Month = month };
             var monthText = ArchiveMonths.Format(month);
@@ -707,6 +819,8 @@ namespace Coflnet.Sky.Auctions.Archive
                             outcome.OutsideMonthRows++;
                             continue;
                         }
+                        if (tag == UnknownTag && nameResolver != null && nameResolver.TryResolve(scyllaRow.ItemName, out _))
+                            continue; // archived under its real tag by the pre-scan
                         outcome.ScyllaRowsInMonth++;
                         var uid = ScyllaArchiveRows.UidOf(scyllaRow);
                         var fingerprint = Fingerprint.Of(scyllaRow);
@@ -724,6 +838,30 @@ namespace Coflnet.Sky.Auctions.Archive
                 }
                 partitionsRead.Inc();
                 await Delay(TimeSpan.FromMilliseconds(options.PartitionPauseMs), cancellationToken).ConfigureAwait(false);
+            }
+
+            foreach (var (retaggedRow, retaggedExtras, retaggedFp) in retagged ?? Enumerable.Empty<(SaveAuction, ScyllaAuctionExtras, Fingerprint)>())
+            {
+                outcome.ScyllaRowsRead++;
+                if (retaggedRow.End < ScyllaArchiveRows.BogusEndBefore)
+                {
+                    outcome.BogusEndRows++;
+                    rowsSkippedBogusEnd.Inc();
+                    continue;
+                }
+                if (ArchiveMonths.MonthOf(retaggedRow.End) != month)
+                {
+                    outcome.OutsideMonthRows++;
+                    continue;
+                }
+                outcome.ScyllaRowsInMonth++;
+                var retaggedUid = retaggedRow.UId;
+                if (winners.TryGetValue(retaggedUid, out var retaggedCurrent) && !ScyllaArchiveRows.IsBetter(retaggedFp, retaggedCurrent.Fingerprint))
+                    continue;
+                var retaggedSeq = -1;
+                if (!phaseOneRows.ContainsKey(retaggedUid))
+                    retaggedSeq = spill.Add(retaggedRow, retaggedExtras);
+                winners[retaggedUid] = new Winner { Fingerprint = retaggedFp, Seq = retaggedSeq };
             }
 
             // d2. a Scylla-only auction that is already located in another tag-month is a stale copy (an unsold snapshot whose

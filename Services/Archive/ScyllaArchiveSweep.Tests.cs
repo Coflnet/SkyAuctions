@@ -40,6 +40,14 @@ public class ScyllaArchiveSweepTests
         public readonly List<TimeSpan> Delays = new();
         public int DatabaseFailures;
         public int DatabaseChecks;
+        public ItemNameTagResolver Resolver = new();
+        public int ResolverLoads;
+
+        protected override Task<ItemNameTagResolver> LoadNameResolverAsync(CancellationToken cancellationToken)
+        {
+            ResolverLoads++;
+            return Task.FromResult(Resolver);
+        }
 
         public TestableScyllaArchiveSweep(InMemoryAuctionBlobStore store, InMemoryMarkers markers, IConfiguration config, ILogger<ScyllaArchiveSweep> logger)
             : base(store, store, markers, null, config, logger)
@@ -991,5 +999,87 @@ public class ScyllaArchiveSweepTests
         Assert.That(errors, Has.Count.EqualTo(3));
         Assert.That(errors[0], Does.StartWith("Auction archive: MariaDB (DBConnection) unavailable, retrying in 10 min"));
         Assert.That(errors[2], Does.StartWith("Auction archive: Redis (ARCHIVE:REDIS_HOST / SETTINGS_REDIS_HOST) unavailable, retrying in 10 min"));
+    }
+    private static ScyllaAuction Named(long uid, DateTime end, string name, string tag = "unknown")
+    {
+        var row = Scylla(uid, end, tag);
+        row.ItemName = name;
+        return row;
+    }
+
+    private const string Unknown = "unknown";
+    private const string Midas = "MIDAS_SWORD";
+
+    private void ArrangeRetag()
+    {
+        sweep.Resolver = new ItemNameTagResolver(new[] { ("Hyperion", Hyperion), ("Terminator", Terminator), ("Midas Sword", Midas), ("Clay", "CLAY"), ("Clay", "CLAY_BALL") });
+        Imported(Aug);
+        Sentinel(Sep);
+    }
+
+    [Test]
+    public async Task UnknownRows_AreRetaggedByItemName_AndOnlyTheUnresolvableRemainderStaysUnderUnknown()
+    {
+        ArrangeRetag();
+        AddScylla(Scylla(1, InSep(3)));
+        AddScylla(
+            Named(10, InSep(4), "§6Hyperion ✪✪✪"),     // resolves to HYPERION (has own partitions)
+            Named(11, InSep(5), "Terminator"),         // TERMINATOR has no partitions of its own
+            Named(12, InSep(6), "Clay"),               // ambiguous
+            Named(13, InSep(7), "Localised Sword"));   // unmatched
+
+        Assert.That(await sweep.Run(), Is.EqualTo(1));
+
+        Assert.That(PartRows(Hyperion, Sep, 0).Select(r => (r.UId, r.Tag)), Is.EquivalentTo(new[] { (1L, Hyperion), (10L, Hyperion) }));
+        Assert.That(PartRows(Terminator, Sep, 0).Select(r => (r.UId, r.Tag)), Is.EqualTo(new[] { (11L, Terminator) }));
+        Assert.That(PartRows(Unknown, Sep, 0).Select(r => r.UId), Is.EquivalentTo(new[] { 12L, 13L }));
+        foreach (var tag in new[] { Hyperion, Terminator, Unknown })
+            Assert.That(markers.Values.ContainsKey(ScyllaArchiveMarkerKeys.TagMonth(tag, Sep)), Is.True, tag);
+        Assert.That(Manifest(Sep).Tags.Select(t => t.Tag), Is.EquivalentTo(new[] { Hyperion, Terminator, Unknown }));
+        Assert.That(Manifest(Sep).Find(Terminator).FirstNewPart, Is.Zero);
+        Assert.That(sweep.ResolverLoads, Is.EqualTo(1));
+        Assert.That(log.Entries.Any(e => e.message.Contains("2020-09 unknown rows: 2 retagged to 2 tags, 2 kept; top unresolved names: Clay (1), Localised Sword (1)")), Is.True);
+    }
+
+    [Test]
+    public async Task UnknownTagMonthWithAMarker_IsNotPreScanned()
+    {
+        ArrangeRetag();
+        AddScylla(Scylla(1, InSep(3)), Named(10, InSep(4), "Terminator"));
+        markers.Values[ScyllaArchiveMarkerKeys.TagMonth(Unknown, Sep)] = "empty:2020-10-23T00:00:00Z";
+
+        await sweep.Run();
+
+        Assert.That(sweep.Fetches.Any(f => f.tag == Unknown), Is.False, "no unknown page read");
+        Assert.That(sweep.ResolverLoads, Is.Zero);
+        Assert.That(markers.Values.ContainsKey(ScyllaArchiveMarkerKeys.TagMonth(Terminator, Sep)), Is.False);
+        Assert.That(PartRows(Hyperion, Sep, 0).Select(r => r.UId), Is.EqualTo(new[] { 1L }));
+    }
+
+    [Test]
+    public async Task RetaggedRowLocatedInAnotherTagMonth_IsSupersededLikeAScyllaRow()
+    {
+        ArrangeRetag();
+        AddScylla(Named(10, InSep(4), "Terminator"), Named(11, InSep(5), "Terminator"));
+        sweep.Locations[10] = (77, ArchiveMonths.ToIndex(Aug), 0);
+
+        await sweep.Run();
+
+        Assert.That(PartRows(Terminator, Sep, 0).Select(r => r.UId), Is.EqualTo(new[] { 11L }));
+        Assert.That(log.Entries.Any(e => e.message.Contains("1 superseded")), Is.True);
+    }
+
+    [Test]
+    public async Task RetaggedRowWhoseTagIsAlreadyMarked_IsDropped_AndDuplicatesKeepTheBetterCopy()
+    {
+        ArrangeRetag();
+        markers.Values[ScyllaArchiveMarkerKeys.TagMonth(Terminator, Sep)] = "empty:2020-10-23T00:00:00Z";
+        AddScylla(Named(10, InSep(4), "Terminator"), Named(20, InSep(5), "Hyperion"), Named(20, InSep(5), "Hyperion"));
+        sweep.Pages[(Unknown, ScyllaService.GetWeekOrDaysSinceStart(Unknown, InSep(5)))][0][1].HighestBidAmount = 5;
+
+        await sweep.Run();
+
+        Assert.That(PartRows(Terminator, Sep, 0), Is.Null, "already marked, not written again");
+        Assert.That(PartRows(Hyperion, Sep, 0).Select(r => (r.UId, r.HighestBidAmount)), Is.EqualTo(new[] { (20L, 5L) }));
     }
 }

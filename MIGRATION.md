@@ -285,6 +285,21 @@ writes MariaDB** (its `DBConnection` is a read-only user): it writes R2 objects 
   tag-month fails without marker. A failure before the marker is redone next pass: parts N.. are rewritten and the manifest
   entry of the tag is replaced, never duplicated. A phase-1 month whose tag index entry is missing is rebuilt from its parts
   (recomputed hashes must match `archived_months.sha256`).
+- **Tag `unknown` is remapped by item name:** `weekly_auctions_2` holds every auction from 2019-11 until about 2020-05 whose tag was
+  not saved under the lowercase tag `unknown` (12-hour timekeys; 2.4M rows in 2019-11 alone). Those rows only have the display name,
+  so `ItemNameTagResolver` (built once per pass from MariaDB `Items` and `AltItemNames`, read only) normalises it (colour codes,
+  leading/trailing stars, `[Lvl N] ` pet prefix, double spaces) and resolves it when exactly one tag matches, retrying without a
+  leading reforge word. Ambiguous (`Clay`, `Water Bottle`) and unmatched names stay under `unknown`. When a month has `unknown`
+  partitions and no `unknown` marker, the sweep first pages them once and spills the resolved rows, grouped by resolved tag, into a
+  disk-backed `RetagSpill`; each tag-month then merges its retagged rows into the normal dedupe/superseded/part flow (a tag with only
+  retagged rows gets its own tag-month, marker and manifest entry). The `unknown` tag-month skips the rows that resolve and archives
+  only the remainder. Parts of a tag-month are still written once. Per month it logs `unknown rows: N retagged to T tags, M kept;
+  top unresolved names: ...`; counters `sky_auctions_archive_retagged_rows` and `_unresolved_rows`.
+  **Restarts:** the pre-scan is redone on every pass that still has unmarked tags in the month (it is skipped only when the `unknown`
+  tag-month already has its marker); retagged rows whose resolved tag is already marked are dropped,
+  that tag-month received them earlier. **Caveat:** if `Items`/`AltItemNames` change between two passes of the same month, a row may
+  resolve to a different tag in the second pass and be archived twice; the superseded check catches this once the earlier
+  tag-month is imported by SkyIndexer.
 - **Markers (Redis):** host `ARCHIVE:REDIS_HOST`, else `SETTINGS_REDIS_HOST` (sky-settings-redis, next to the bazaar archive
   markers; not the retired sky-auctions-redis). Keys: `auctions_archive:v2:{tag}:{yyyy-MM}` =
   `archived:{scyllaOnlyRows}:{newParts}:{iso}` | `empty:{iso}` | `overlap_only:{iso}`; `auctions_archive:v2:month:{yyyy-MM}` =
@@ -310,7 +325,7 @@ writes MariaDB** (its `DBConnection` is a read-only user): it writes R2 objects 
   and enchantments that are no `EnchantmentType` (`UnknownEnchantments`).
 - **Metrics** (`/metrics`): `sky_auctions_archive_tag_months_total`, `_tag_months_empty`, `_parts_written`, `_parts_verified`,
   `_verify_failures`, `_rows_archived`, `_rows_already_archived`, `_rows_skipped_bogus_end`, `_rows_superseded`,
-  `_crosscheck_rows`, `_crosscheck_mismatches{field}`, `_pages`, `_partitions_read`, `_page_retries`, `_errors`, gauges
+  `_retagged_rows`, `_unresolved_rows`, `_crosscheck_rows`, `_crosscheck_mismatches{field}`, `_pages`, `_partitions_read`, `_page_retries`, `_errors`, gauges
   `_current_month`, `_partitions_known`, `_last_month_completed_timestamp`, `_waiting_for_import_month`; store
   `sky_auctions_blob_*` (incl. `_blob_index_conflicts`). SkyIndexer: `sky_indexer_scylla_import_{tags, parts_verified,
   hash_mismatches, index_rows, bidder_rows, bids_without_bidder, months_completed, errors}`.
