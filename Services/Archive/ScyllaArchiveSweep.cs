@@ -586,8 +586,9 @@ namespace Coflnet.Sky.Auctions.Archive
                 }
                 catch (Exception ex)
                 {
-                    logger.LogError(ex, "Scylla archive of {Tag} {Month} failed; nothing marked, retried next pass", tag, monthText);
-                    outcome = new TagMonthOutcome { Tag = tag, Month = month, Result = TagMonthResult.Failed, Error = ex.Message };
+                    var error = DescribeException(ex);
+                    logger.LogError(ex, "Scylla archive of {Tag} {Month} failed: {Error}; nothing marked, retried next pass", tag, monthText, error);
+                    outcome = new TagMonthOutcome { Tag = tag, Month = month, Result = TagMonthResult.Failed, Error = error };
                 }
                 if (outcome.Result == TagMonthResult.Failed)
                 {
@@ -862,6 +863,18 @@ namespace Coflnet.Sky.Auctions.Archive
             public readonly List<string> Hashes = new();
             public int Rows;
             public int Sold;
+        }
+
+        /// <summary>
+        /// Exception type and message of <paramref name="ex"/> followed by its inner exceptions (" <- " separated, at most three levels), newlines collapsed.
+        /// Put into the log message itself because the shipped log line carries only the rendered message, not the exception object.
+        /// </summary>
+        internal static string DescribeException(Exception ex)
+        {
+            var parts = new List<string>();
+            for (var e = ex; e != null && parts.Count < 3; e = e.InnerException)
+                parts.Add($"{e.GetType().Name}: {e.Message?.Replace('\n', ' ').Replace('\r', ' ').Trim()}");
+            return string.Join(" <- ", parts);
         }
 
         /// <summary>Sweep one tag-month (see the class summary). Never throws for data problems; returns <see cref="TagMonthResult.Failed"/>.</summary>

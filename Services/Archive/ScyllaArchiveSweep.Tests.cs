@@ -486,6 +486,17 @@ public class ScyllaArchiveSweepTests
         Assert.That(sweep.Delays.SkipWhile(d => d != TimeSpan.FromSeconds(2)).Take(3), Is.EqualTo(new[] { TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(4), TimeSpan.FromSeconds(8) }));
         Assert.That(AnyWriteOrMarker(), Is.False);
         Assert.That(Manifest(Sep), Is.Null);
+        var failure = log.Entries.Single(e => e.level == LogLevel.Error && e.message.Contains("Scylla archive of HYPERION 2020-09 failed"));
+        Assert.That(failure.message, Does.Contain("InvalidOperationException: Page of HYPERION timekey"), "outer exception in the message itself");
+        Assert.That(failure.message, Does.Contain("<- TimeoutException: read timeout HYPERION"), "inner exception follows");
+    }
+
+    [Test]
+    public void DescribeException_ListsTypeMessageAndInnerChain()
+    {
+        var ex = new InvalidOperationException("outer\nline", new TimeoutException("middle", new ArgumentException("inner", new Exception("too deep"))));
+        Assert.That(ScyllaArchiveSweep.DescribeException(ex), Is.EqualTo("InvalidOperationException: outer line <- TimeoutException: middle <- ArgumentException: inner"));
+        Assert.That(ScyllaArchiveSweep.DescribeException(new TimeoutException("only")), Is.EqualTo("TimeoutException: only"));
     }
 
     [Test]
