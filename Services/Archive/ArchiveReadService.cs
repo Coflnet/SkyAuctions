@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Coflnet.Sky.Core;
 using Coflnet.Sky.Core.Archive;
+using Microsoft.EntityFrameworkCore;
 using Newtonsoft.Json;
 
 namespace Coflnet.Sky.Auctions.Archive
@@ -46,10 +48,27 @@ namespace Coflnet.Sky.Auctions.Archive
         /// <summary>The hosted core reader.</summary>
         public ArchivedAuctionReader Reader { get; }
 
-        /// <summary>DI constructor.</summary>
-        public ArchiveReadService(ArchivedAuctionReader reader)
+        private readonly Func<uint, CancellationToken, Task<string>> playerUuid;
+
+        /// <summary>DI constructor. <paramref name="playerUuid"/> maps <c>Players.Id</c> to the uuid (default: the Players table), used for the opt-out check of the player endpoints.</summary>
+        public ArchiveReadService(ArchivedAuctionReader reader, Func<uint, CancellationToken, Task<string>> playerUuid = null)
         {
             Reader = reader ?? throw new ArgumentNullException(nameof(reader));
+            this.playerUuid = playerUuid ?? LookupPlayerUuidAsync;
+        }
+
+        private static async Task<string> LookupPlayerUuidAsync(uint playerId, CancellationToken cancellationToken)
+        {
+            using var db = new HypixelContext();
+            var id = (int)playerId;
+            return await db.Players.AsNoTracking().Where(p => p.Id == id).Select(p => p.UuId).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        /// <summary>True when the player (<c>Players.Id</c>) opted out of processing; unknown ids are not opted out.</summary>
+        public async Task<bool> IsOptedOutAsync(uint playerId, CancellationToken cancellationToken = default)
+        {
+            var uuid = await playerUuid(playerId, cancellationToken).ConfigureAwait(false);
+            return uuid != null && PlayerOptOut.IsOptedOut(uuid);
         }
 
         /// <summary>A limit within <c>1..max</c>; <paramref name="fallback"/> when not given.</summary>
@@ -103,10 +122,24 @@ namespace Coflnet.Sky.Auctions.Archive
             return ArchivedAuctionDto.From(auction, includeItemBytes, includeBids: true);
         }
 
-        /// <summary>Archived auctions a player bid on (newest first, with bids).</summary>
-        public async Task<List<ArchivedAuctionDto>> GetBidsAsync(uint bidderId, int? fromMonth, int? toMonth, int? limit, CancellationToken cancellationToken = default)
+        /// <summary>
+        /// Archived auctions a player bid on (newest first, with bids), after the paging cursor <paramref name="before"/>. Empty for an opted-out
+        /// player (like the player index endpoints); the reader already masks opted-out participants of every returned auction (<see cref="ArchivePrivacy.Mask"/>).
+        /// </summary>
+        public async Task<List<ArchivedAuctionDto>> GetBidsAsync(uint bidderId, int? fromMonth, int? toMonth, int? limit, AuctionIndexCursor before = null, CancellationToken cancellationToken = default)
         {
-            var found = await Reader.FindByBidderAsync(bidderId, fromMonth, toMonth, ClampLimit(limit, DefaultBidLimit, MaxBidLimit), cancellationToken).ConfigureAwait(false);
+            if (await IsOptedOutAsync(bidderId, cancellationToken).ConfigureAwait(false))
+                return new List<ArchivedAuctionDto>();
+            var found = await Reader.FindByBidderAsync(bidderId, fromMonth, toMonth, ClampLimit(limit, DefaultBidLimit, MaxBidLimit), before, cancellationToken).ConfigureAwait(false);
+            return found.Select(a => ArchivedAuctionDto.From(a, includeBids: true)).ToList();
+        }
+
+        /// <summary>Archived auctions a player sold or listed; same limits, cursor and privacy rules as <see cref="GetBidsAsync"/>.</summary>
+        public async Task<List<ArchivedAuctionDto>> GetSellsAsync(uint sellerId, int? fromMonth, int? toMonth, int? limit, AuctionIndexCursor before = null, CancellationToken cancellationToken = default)
+        {
+            if (await IsOptedOutAsync(sellerId, cancellationToken).ConfigureAwait(false))
+                return new List<ArchivedAuctionDto>();
+            var found = await Reader.FindBySellerAsync(sellerId, fromMonth, toMonth, ClampLimit(limit, DefaultBidLimit, MaxBidLimit), before, cancellationToken).ConfigureAwait(false);
             return found.Select(a => ArchivedAuctionDto.From(a, includeBids: true)).ToList();
         }
 

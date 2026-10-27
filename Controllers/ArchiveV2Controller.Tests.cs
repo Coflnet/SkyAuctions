@@ -31,6 +31,7 @@ public class ArchiveV2ControllerTests
         public readonly Dictionary<long, AuctionLocation> Locations = new();
         public readonly Dictionary<(string, int), ArchivedMonth> Months = new();
         public readonly List<AuctionBidder> Bidders = new();
+        public readonly List<AuctionSeller> Sellers = new();
 
         public Task<AuctionLocation> GetLocationAsync(long uid, CancellationToken cancellationToken = default)
             => Task.FromResult(Locations.GetValueOrDefault(uid));
@@ -41,9 +42,13 @@ public class ArchiveV2ControllerTests
         public Task<string> GetTagNameAsync(ushort tagId, CancellationToken cancellationToken = default)
             => Task.FromResult(tagId == HyperionId ? Hyperion : null);
 
-        public Task<IReadOnlyList<AuctionBidder>> GetBidderRowsAsync(uint bidderId, uint fromUnixSeconds, uint toUnixSeconds, int limit, CancellationToken cancellationToken = default)
-            => Task.FromResult<IReadOnlyList<AuctionBidder>>(Bidders.Where(b => b.BidderId == bidderId && b.End >= fromUnixSeconds && b.End < toUnixSeconds)
-                .OrderByDescending(b => b.End).Take(limit).ToList());
+        public Task<IReadOnlyList<AuctionBidder>> GetBidderRowsAsync(uint bidderId, uint fromUnixSeconds, uint toUnixSeconds, int limit, AuctionIndexCursor before = null, CancellationToken cancellationToken = default)
+            => Task.FromResult<IReadOnlyList<AuctionBidder>>(Bidders.Where(b => b.BidderId == bidderId && b.End >= fromUnixSeconds && b.End < toUnixSeconds && (before == null || b.End < before.End || b.End == before.End && b.Uid < before.Uid))
+                .OrderByDescending(b => b.End).ThenByDescending(b => b.Uid).Take(limit).ToList());
+
+        public Task<IReadOnlyList<AuctionSeller>> GetSellerRowsAsync(uint sellerId, uint fromUnixSeconds, uint toUnixSeconds, int limit, AuctionIndexCursor before = null, CancellationToken cancellationToken = default)
+            => Task.FromResult<IReadOnlyList<AuctionSeller>>(Sellers.Where(b => b.SellerId == sellerId && b.End >= fromUnixSeconds && b.End < toUnixSeconds && (before == null || b.End < before.End || b.End == before.End && b.Uid < before.Uid))
+                .OrderByDescending(b => b.End).ThenByDescending(b => b.Uid).Take(limit).ToList());
 
         public Task<ArchivedMonth> GetArchivedMonthAsync(string tag, int month, CancellationToken cancellationToken = default)
             => Task.FromResult(Months.GetValueOrDefault((tag, month)));
@@ -55,12 +60,16 @@ public class ArchiveV2ControllerTests
         store = new InMemoryAuctionBlobStore();
         lookup = new FakeLookup();
         var reader = new ArchivedAuctionReader(store, lookup, NullLogger.Instance);
-        controller = new ArchiveV2Controller(new ArchiveReadService(reader))
+        controller = new ArchiveV2Controller(new ArchiveReadService(reader, (id, _) => Task.FromResult(PlayerUuids.GetValueOrDefault(id))))
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() },
         };
         controller.HttpContext.Response.Body = new MemoryStream();
     }
+
+    /// <summary>Players.Id to uuid for the opt-out check; the first legacy opt-out uuid belongs to player <see cref="OptedOutPlayer"/>.</summary>
+    private const int OptedOutPlayer = 77;
+    private static readonly Dictionary<uint, string> PlayerUuids = new() { [9] = Uuid(9), [OptedOutPlayer] = PlayerOptOut.LegacyPlayerUuids[0] };
 
     private static string Uuid(long uid) => uid.ToString("x32");
 
@@ -248,14 +257,97 @@ public class ArchiveV2ControllerTests
     {
         ArchiveSeptember();
         uint End(int day) => (uint)new DateTimeOffset(SepStart.AddDays(day)).ToUnixTimeSeconds();
-        lookup.Bidders.Add(new AuctionBidder { BidderId = 9, Uid = 1, End = End(1), Amount = 500 });
-        lookup.Bidders.Add(new AuctionBidder { BidderId = 9, Uid = 6, End = End(25), Amount = 800 });
+        lookup.Bidders.Add(new AuctionBidder { BidderId = 9, Uid = 1, End = End(1) });
+        lookup.Bidders.Add(new AuctionBidder { BidderId = 9, Uid = 6, End = End(25) });
 
         var bids = OkValue(await controller.GetPlayerBids(9, "2020-09", "2020-09"));
         Assert.That(bids.Select(b => b.Uid), Is.EqualTo(new long[] { 6, 1 }));
         Assert.That(bids.All(b => b.Bids != null));
         Assert.That(OkValue(await controller.GetPlayerBids(9, "2020-10", null)), Is.Empty);
         Assert.That(StatusOf(await controller.GetPlayerBids(9, "bad", null)), Is.EqualTo(400));
+    }
+
+    [Test]
+    public async Task PlayerSellsListsTheSellersAuctionsNewestFirst()
+    {
+        ArchiveSeptember();
+        uint End(int day) => (uint)new DateTimeOffset(SepStart.AddDays(day)).ToUnixTimeSeconds();
+        lookup.Sellers.Add(new AuctionSeller { SellerId = 9, Uid = 1, End = End(1) });
+        lookup.Sellers.Add(new AuctionSeller { SellerId = 9, Uid = 6, End = End(25) });
+        lookup.Sellers.Add(new AuctionSeller { SellerId = 10, Uid = 2, End = End(2) });
+        lookup.Bidders.Add(new AuctionBidder { BidderId = 9, Uid = 2, End = End(2) }); // a bid is not a sell
+
+        var sells = OkValue(await controller.GetPlayerSells(9, "2020-09", "2020-09"));
+        Assert.That(sells.Select(b => b.Uid), Is.EqualTo(new long[] { 6, 1 }));
+        Assert.That(OkValue(await controller.GetPlayerSells(9, null, null, 1)).Select(b => b.Uid), Is.EqualTo(new long[] { 6 }), "limit applies");
+        Assert.That(OkValue(await controller.GetPlayerSells(9, "2020-10", null)), Is.Empty);
+        Assert.That(StatusOf(await controller.GetPlayerSells(9, "bad", null)), Is.EqualTo(400));
+        Assert.That(StatusOf(await controller.GetPlayerSells(9, null, "bad")), Is.EqualTo(400));
+        Assert.That(StatusOf(await controller.GetPlayerSells(-1)), Is.EqualTo(400));
+        Assert.That(StatusOf(await new ArchiveV2Controller().GetPlayerSells(9)), Is.EqualTo(503));
+    }
+
+    [Test]
+    public async Task PlayerSellsAndBidsPageWithTheBeforeCursor()
+    {
+        ArchiveSeptember();
+        uint End(int day) => (uint)new DateTimeOffset(SepStart.AddDays(day)).ToUnixTimeSeconds();
+        foreach (var (uid, day) in new[] { (1L, 1), (2L, 4), (3L, 8), (5L, 2), (6L, 25) })
+        {
+            lookup.Sellers.Add(new AuctionSeller { SellerId = 9, Uid = uid, End = End(day) });
+            lookup.Bidders.Add(new AuctionBidder { BidderId = 9, Uid = uid, End = End(day) });
+        }
+
+        var seen = new List<long>();
+        string cursor = null;
+        for (var page = 0; page < 5; page++)
+        {
+            controller.Response.Headers.Remove("X-Next-Before");
+            var got = OkValue(await controller.GetPlayerSells(9, null, null, 2, cursor));
+            seen.AddRange(got.Select(a => a.Uid));
+            if (!controller.Response.Headers.TryGetValue("X-Next-Before", out var next))
+                break;
+            cursor = next.ToString();
+        }
+        Assert.That(seen, Is.EqualTo(new long[] { 6, 3, 2, 5, 1 }), "three pages of at most 2, the header continues until a short page");
+
+        var bids = OkValue(await controller.GetPlayerBids(9, null, null, 100, $"{End(4)}:2"));
+        Assert.That(bids.Select(a => a.Uid), Is.EqualTo(new long[] { 5, 1 }));
+        Assert.That(StatusOf(await controller.GetPlayerSells(9, null, null, null, "garbage")), Is.EqualTo(400));
+        Assert.That(StatusOf(await controller.GetPlayerBids(9, null, null, null, "5")), Is.EqualTo(400));
+    }
+
+    [Test]
+    public async Task OptedOutPlayerGetsAnEmptyListLikeTheOtherPlayerEndpoints()
+    {
+        ArchiveSeptember();
+        uint End(int day) => (uint)new DateTimeOffset(SepStart.AddDays(day)).ToUnixTimeSeconds();
+        lookup.Sellers.Add(new AuctionSeller { SellerId = OptedOutPlayer, Uid = 1, End = End(1) });
+        lookup.Bidders.Add(new AuctionBidder { BidderId = OptedOutPlayer, Uid = 1, End = End(1) });
+
+        Assert.That(OkValue(await controller.GetPlayerSells(OptedOutPlayer)), Is.Empty);
+        Assert.That(OkValue(await controller.GetPlayerBids(OptedOutPlayer)), Is.Empty);
+    }
+
+    [Test]
+    public async Task OptedOutParticipantsOfReturnedAuctionsAreMasked()
+    {
+        var optedOut = PlayerOptOut.LegacyPlayerUuids[0];
+        var row = Row(7, 3, 400);
+        row.AuctioneerId = optedOut;
+        row.Bids = new List<SaveBids> { new() { Bidder = optedOut, Amount = 400, Timestamp = SepStart.AddDays(2) } };
+        var block = ArchivedAuctionBlock.FromAuctions(Hyperion, Sep, 0, ArchivedAuctionBlock.SourceMariaDb, new[] { row });
+        store.WriteBlockAsync(block).Wait();
+        lookup.Locations[7] = new AuctionLocation { Uid = 7, TagId = HyperionId, Month = ArchiveMonths.ToIndex(Sep), Part = 0 };
+        var end = (uint)new DateTimeOffset(SepStart.AddDays(3)).ToUnixTimeSeconds();
+        lookup.Sellers.Add(new AuctionSeller { SellerId = 9, Uid = 7, End = end });
+        lookup.Bidders.Add(new AuctionBidder { BidderId = 9, Uid = 7, End = end });
+
+        foreach (var auction in new[] { OkValue(await controller.GetPlayerSells(9)).Single(), OkValue(await controller.GetPlayerBids(9)).Single() })
+        {
+            Assert.That(auction.Auctioneer, Does.StartWith(PlayerOptOut.AnonymousUuidPrefix), "the opted-out seller is replaced by an anonymous uuid");
+            Assert.That(auction.Bids.Single().Bidder, Does.StartWith(PlayerOptOut.AnonymousUuidPrefix));
+        }
     }
 
     [Test]

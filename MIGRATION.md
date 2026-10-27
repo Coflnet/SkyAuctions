@@ -308,8 +308,8 @@ writes MariaDB** (its `DBConnection` is a read-only user): it writes R2 objects 
   skipped; lost markers are harmless (an imported tag/month is recognised by `scylla_at`, otherwise the work is redone).
 - **Hand-off and pipeline gate:** SkyIndexer's `ScyllaArchiveImportWorker` (every `ARCHIVE:IMPORT_POLL_MINUTES`, default 5)
   reads each manifest whose sentinel has no `scylla_at`, verifies each new part's SHA-256 against the manifest and the tag
-  index, writes `auction_locations` (never moving another tag-month's location) and `auction_bidders` (bidder uuid to
-  `Players.Id`), upserts the tag's `archived_months` row (parts, rows, sold rows, sha256 over all parts, source, `index_rows`
+  index, writes `auction_locations` (never moving another tag-month's location) `auction_bidders` (bidder uuid to
+  `Players.Id`) and `auction_sellers` (auctioneer uuid to `Players.Id`), upserts the tag's `archived_months` row (parts, rows, sold rows, sha256 over all parts, source, `index_rows`
   and `index_bidder_rows` grown by the same amount so the retention worker's `index_rows == rows` gate holds, `scylla_at`) and,
   once the manifest is completed and every entry imported, sets `scylla_at` on the sentinel. **The sweep starts month M+1 only
   after month M's sentinel has `scylla_at`** (it logs `waiting for SkyIndexer to import {M}` once and checks again every `IMPORT_WAIT_MINUTES`), so the
@@ -370,5 +370,6 @@ v2 archive through the core `Coflnet.Sky.Core.Archive.ArchivedAuctionReader` (R2
 - `GET /api/archive/v2/{tag}/{yyyy-MM}/export?format=csv|jsonl&...`: same filters, streamed, at most 100000 rows (`ArchiveExport`).
 - `GET /api/archive/v2/auction/{uuid}`: one `auction_locations` read + one block read, with bids; 404 when not archived.
 - `GET /api/archive/v2/player/{bidderId}/bids?fromMonth=&toMonth=&limit=`: via `auction_bidders`, each block read once.
+- `GET /api/archive/v2/player/{sellerId}/sells?fromMonth=&toMonth=&limit=`: via `auction_sellers` (the player's own auctions, sold or not), same limits (default 100, at most 1000). Both `/bids` and `/sells` page with `before=<endUnixSeconds>:<uid>` (newest first; a full page sets the response header `X-Next-Before` to the cursor of the next page), return an empty list for an opted-out player and opted-out participants are masked on every archive read path by the core reader (`ArchivePrivacy.Mask`: by uuid, tag-month, export, bids, sells). Erasure of a player in the archive runs in SkyIndexer (`privacy erase`), because it needs MariaDB write access. The generated `Coflnet.Sky.Auctions.Client` is not regenerated here (`Client/generate.sh` from the swagger document); regenerate it when a consumer needs the endpoint.
 - `GET /api/archive/v2/verify/{tag}/{yyyy-MM}`: uncached read of every part, recomputed SHA-256 against the tag index and
   `archived_months.sha256` (over the parts the row counts; phase-2 parts only after SkyIndexer imported them).

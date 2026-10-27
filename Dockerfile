@@ -1,5 +1,7 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /build
+# bump to force a fresh clone of the dev and SkyFilter repos (layer cache otherwise reuses an old clone)
+ARG CACHEBUST=20261027
 RUN git clone --depth=1 https://github.com/Coflnet/HypixelSkyblock.git dev
 RUN git clone --depth=1 https://github.com/Coflnet/SkyFilter.git
 WORKDIR /build/sky
