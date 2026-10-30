@@ -18,12 +18,14 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.OpenApi;
 using Prometheus;
-using System.Security.Cryptography;
 using StackExchange.Redis;
 using Coflnet.Sky.Filter;
 using Coflnet.Sky.PlayerName.Client.Api;
 using Coflnet.Sky.Api.Client.Api;
 using Coflnet.Kafka;
+using Coflnet.Core.Security;
+using Coflnet.Cassandra;
+using System.Net.Security;
 
 namespace Coflnet.Sky.Auctions;
 public class Startup
@@ -64,8 +66,7 @@ public class Startup
         services.AddDbContext<BaseDbContext>(
             dbContextOptions => dbContextOptions
                 .UseMySql(Configuration["DB_CONNECTION"], serverVersion)
-                .EnableSensitiveDataLogging() // <-- These two calls are optional but help
-                .EnableDetailedErrors()       // <-- with debugging (remove for production).
+                .EnableDetailedErrors()
         );
         services.AddJaeger(Configuration);
         services.AddTransient<BaseService>();
@@ -76,6 +77,9 @@ public class Startup
         services.AddSingleton<ItemDetails>();
         services.AddHttpClient();
         services.AddSingleton<IConnectionMultiplexer>(provider => ConnectionMultiplexer.Connect(Configuration["REDIS_HOST"]));
+        var cassandraTls = Configuration.GetSection("CASSANDRA:TLS");
+        if (cassandraTls.Exists())
+            services.AddSingleton(_ => PemTlsOptions.FromConfiguration(cassandraTls));
         services.AddSingleton<ISession>(p =>
         {
             Console.WriteLine("Connecting to Cassandra...");
@@ -90,14 +94,11 @@ public class Startup
             Console.WriteLine("Using replication class " + Configuration["CASSANDRA:REPLICATION_CLASS"]);
             Console.WriteLine("Using replication factor " + Configuration["CASSANDRA:REPLICATION_FACTOR"]);
             Console.WriteLine("Using user " + Configuration["CASSANDRA:USER"]);
-            Console.WriteLine("Using password " + Configuration["CASSANDRA:PASSWORD"].Truncate(2) + "...");
             var certificatePaths = Configuration["CASSANDRA:X509Certificate_PATHS"];
-            Console.WriteLine("Using certificate paths " + certificatePaths);
-            if (!string.IsNullOrEmpty(certificatePaths))
-                Console.WriteLine("Hash of certificate file " + SHA256CheckSum(certificatePaths));
-            Console.WriteLine("Using certificate password " + Configuration["CASSANDRA:X509Certificate_PASSWORD"].Truncate(2) + "...");
             var validationCertificatePath = Configuration["CASSANDRA:X509Certificate_VALIDATION_PATH"];
-            if (!string.IsNullOrEmpty(certificatePaths))
+            if (cassandraTls.Exists())
+                builder.WithSSL(p.GetRequiredService<PemTlsOptions>().CreateCassandraSslOptions(cassandraTls["SERVER_NAME"]));
+            else if (!string.IsNullOrEmpty(certificatePaths))
             {
                 var password = Configuration["CASSANDRA:X509Certificate_PASSWORD"] ?? throw new InvalidOperationException("CASSANDRA:X509Certificate_PASSWORD must be set if CASSANDRA:X509Certificate_PATHS is set.");
                 CustomRootCaCertificateValidator certificateValidator = null;
@@ -109,7 +110,7 @@ public class Startup
                     SslProtocols.Tls12,
                     false,
                     // Custom validator avoids need to trust the CA system-wide.
-                    (sender, certificate, chain, errors) => certificateValidator?.Validate(certificate, chain, errors) ?? true
+                    (sender, certificate, chain, errors) => certificateValidator?.Validate(certificate, chain, errors) ?? errors == SslPolicyErrors.None
                 ).SetCertificateCollection(new(certificatePaths.Split(',').Select(p => X509CertificateLoader.LoadPkcs12FromFile(p, password)).ToArray()));
                 builder.WithSSL(sslOptions);
             }
@@ -210,20 +211,6 @@ public class Startup
         services.AddSingleton<IPlayerNameApi>(di => new PlayerNameApi(Configuration["PLAYERNAME_BASE_URL"]));
         services.AddResponseCaching();
         services.AddResponseCompression();
-    }
-
-    /// <summary>
-    /// https://stackoverflow.com/a/51966515
-    /// </summary>
-    /// <param name="filePath"></param>
-    /// <returns></returns>
-    public string SHA256CheckSum(string filePath)
-    {
-        using (var sha256 = SHA256.Create())
-        {
-            using (FileStream fileStream = File.OpenRead(filePath))
-                return Convert.ToBase64String(sha256.ComputeHash(fileStream));
-        }
     }
 
     // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.

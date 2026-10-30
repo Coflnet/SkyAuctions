@@ -9,6 +9,11 @@ on:
 
 jobs:
   container-ci:
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      security-events: write
     uses: Coflnet/.github/.github/workflows/container-ci.yml@main
     with:
       k8s_file: main/sky/chart/charts/sky-auctions/values.yaml

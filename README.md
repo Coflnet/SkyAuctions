@@ -458,3 +458,24 @@ Two backfill services are available:
 
 - **ScyllaToS3BackfillService**: Migrates from ScyllaDB (`S3:BackfillScylla=true`)
 - **MariaDbToS3BackfillService**: Migrates from MariaDB (`S3:BackfillMariaDb=true`)
+
+### External CQL PEM TLS
+
+Set all of `CASSANDRA:TLS:CA_CERT_PATH`, `CERT_PATH`, and `KEY_PATH` to opt in.
+The certificate PEM includes its intermediate chain. `SERVER_NAME` is optional;
+otherwise each contact IP is verified normally. The current legacy listener needs
+explicit `SERVER_NAME=sky-client` and its CA in the trust bundle until its separate
+server-certificate migration. Password authentication remains enabled.
+
+Core 0.7.5 reloads projected PEM files on new Cassandra connections and rejects
+broken replacements. Existing connections remain active. Mount without `subPath`
+and provide a private writable ephemeral `HOME` for UID 1000: Cassandra 3.23 needs
+validated public intermediates in the CurrentUser CA store to send the full chain.
+No root or machine trust is installed. The callback ordering is pinned to that
+driver version. In-flight valid identities can finish during renewal.
+
+Without PEM configuration the existing PFX settings remain available, with strict
+configured-root validation or normal OS validation when no root is configured.
+`/health/ready` performs only `SELECT key FROM system.local`, bounded to five
+seconds; the existing `/metrics` readiness probe and worker timings are unchanged.
+Kafka, Redis, internal HTTP, SQL and archive TLS are outside this opt-in.
