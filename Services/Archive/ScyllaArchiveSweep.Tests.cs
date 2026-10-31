@@ -106,6 +106,12 @@ public class ScyllaArchiveSweepTests
             return Task.FromResult(RedoState);
         }
 
+        protected override Task<bool> IsMonthDeletedAsync(int month, CancellationToken cancellationToken)
+        {
+            var index = ArchiveMonths.ToIndex(month);
+            return Task.FromResult(Months.Where(m => m.Key.month == index).Any(m => ScyllaArchiveRows.IsDeleted(m.Value)));
+        }
+
         protected override Task<ushort?> GetTagIdAsync(string tag, CancellationToken cancellationToken)
             => Task.FromResult(Tags.TryGetValue(tag, out var id) ? (ushort?)id : null);
 
@@ -1190,5 +1196,74 @@ public class ScyllaArchiveSweepTests
         Assert.That(markers.Values.ContainsKey(outside), Is.False);
         Assert.That(log.Entries.Any(e => e.level == LogLevel.Warning && e.message.Contains("redo of 2019-12 requested but it is outside")), Is.True);
         Assert.That(sweep.RedoStateReads, Is.Zero);
+    }
+
+    [Test]
+    public async Task TagMonthWithDeletedRows_IsRefused_NothingWritten_AndCounted()
+    {
+        var overlap = new[] { Scylla(1, InSep(2), bid: 50) };
+        SeedPhaseOne(Hyperion, Sep, overlap.Select(Maria).ToList());
+        Imported(Aug);
+        AddScylla(overlap);
+        AddScylla(Scylla(3, InSep(5)));
+        sweep.Row(Hyperion, Sep).DeletedRows = 7; // retention worker already removed MariaDB rows of this tag-month
+        // the sentinel is clean: only the tag row says deleted, so the refusal comes from ProcessTagMonthAsync
+        var before = ScyllaArchiveSweep.refusedDeletedMonth.Value;
+
+        var outcome = await sweep.ProcessTagMonthAsync(Hyperion, Sep, sweep.Row(Hyperion, Sep), new short[] { ScyllaService.GetWeekOrDaysSinceStart(Hyperion, InSep(5)) }, Options(), CancellationToken.None);
+
+        Assert.That(outcome.Result, Is.EqualTo(TagMonthResult.Failed));
+        Assert.That(outcome.Error, Does.StartWith("refused"));
+        Assert.That(AnyWriteOrMarker(), Is.False);
+        Assert.That(sweep.Fetches, Is.Empty, "Scylla was not even read");
+        Assert.That(ScyllaArchiveSweep.refusedDeletedMonth.Value, Is.EqualTo(before + 1));
+        Assert.That(log.Entries.Any(e => e.level == LogLevel.Warning && e.message.Contains("refusing to write tag-month")), Is.True);
+    }
+
+    [Test]
+    public async Task TagMonthWithDeletedAt_IsRefused()
+    {
+        SeedPhaseOne(Hyperion, Sep, new[] { Maria(Scylla(1, InSep(2))) });
+        sweep.Row(Hyperion, Sep).DeletedAt = Now;
+
+        var outcome = await sweep.ProcessTagMonthAsync(Hyperion, Sep, sweep.Row(Hyperion, Sep), new short[0], Options(), CancellationToken.None);
+
+        Assert.That(outcome.Result, Is.EqualTo(TagMonthResult.Failed));
+        Assert.That(AnyWriteOrMarker(), Is.False);
+    }
+
+    [Test]
+    public async Task MonthWhoseSentinelIsDeleted_IsNotSwept_AndTheOtherMonthsStayUntouched()
+    {
+        Sentinel(Aug);
+        AddScylla(Scylla(1, InAug(3)));
+        sweep.Sentinel(Aug).DeletedAt = Now; // deleted but (anomalously) never imported: still must not be written
+        events.Clear();
+        var before = ScyllaArchiveSweep.refusedDeletedMonth.Value;
+
+        Assert.That(await sweep.Run(), Is.Zero);
+
+        Assert.That(AnyWriteOrMarker(), Is.False, string.Join(",", events));
+        Assert.That(Manifest(Aug), Is.Null);
+        Assert.That(ScyllaArchiveSweep.refusedDeletedMonth.Value, Is.GreaterThan(before));
+    }
+
+    [Test]
+    public async Task Redo_OfADeletedMonth_IsRefused_ManifestAndMarkersKept_RedoKeyDropped()
+    {
+        await SweptAndImportedAugustWithRedoRequested();
+        sweep.Sentinel(Aug).DeletedRows = 3;
+        var manifestBefore = Manifest(Aug).Tags.Count;
+        var before = ScyllaArchiveSweep.refusedDeletedMonth.Value;
+
+        await sweep.Run();
+
+        Assert.That(markers.Values.ContainsKey(ScyllaArchiveMarkerKeys.TagMonth(Hyperion, Aug)), Is.True, "marker not reset");
+        Assert.That(markers.Values.ContainsKey(ScyllaArchiveMarkerKeys.Month(Aug)), Is.True);
+        Assert.That(Manifest(Aug).Tags.Count, Is.EqualTo(manifestBefore), "manifest not reset");
+        Assert.That(markers.Values.ContainsKey(ScyllaArchiveMarkerKeys.Redo(Aug)), Is.False);
+        Assert.That(sweep.RedoStateReads, Is.Zero);
+        Assert.That(events.Any(e => e.Contains($":{Aug}:") || e == "meta:" + AugManifest), Is.False, "nothing of August written");
+        Assert.That(ScyllaArchiveSweep.refusedDeletedMonth.Value, Is.GreaterThan(before));
     }
 }

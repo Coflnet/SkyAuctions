@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Amazon.S3;
+using Coflnet.Sky.Auctions.Archive;
 using Coflnet.Sky.Auctions.Models;
 using Coflnet.Sky.Auctions.Services;
 using Coflnet.Sky.Core;
@@ -26,6 +27,7 @@ public class PlayerArchiveController : ControllerBase
     private readonly ScyllaService scyllaService;
     private readonly ILogger<PlayerArchiveController> logger;
     private readonly int monthsInScylla;
+    private readonly ArchiveReadService archiveV2;
 
     /// <summary>
     /// Initializes a new instance of the PlayerArchiveController
@@ -36,8 +38,10 @@ public class PlayerArchiveController : ControllerBase
         ILogger<PlayerArchiveController> logger,
         S3PlayerIndexService playerIndex = null,
         S3AuctionBlobService auctionBlobs = null,
-        BloomFilterService bloomFilter = null)
+        BloomFilterService bloomFilter = null,
+        ArchiveReadService archiveV2 = null)
     {
+        this.archiveV2 = archiveV2;
         this.playerIndex = playerIndex;
         this.auctionBlobs = auctionBlobs;
         this.bloomFilter = bloomFilter;
@@ -237,7 +241,36 @@ public class PlayerArchiveController : ControllerBase
             result.S3ArchiveCount = result.ArchivedParticipations.Count;
         }
 
+        // 3. R2 archive v2 (the only copy once old rows are deleted from Scylla), same entry shape, auctions the v1 index lists are not repeated
+        if (archiveV2 != null)
+            await AddArchiveV2Async(result, guid, type, startYear.Value, endYear.Value, limit, recentScyllaLoaded ? scyllaCutoff : null, ct);
+
         return Ok(result);
+    }
+
+    /// <summary>The [from, to) range of the years, clamped to 2019..next year so out-of-range input cannot overflow a DateTime.</summary>
+    internal static (DateTime from, DateTime to) ArchiveYearRange(int startYear, int endYear)
+    {
+        var max = DateTime.UtcNow.Year + 1;
+        var start = Math.Clamp(startYear, 2019, max);
+        var end = Math.Clamp(endYear, 2019, max);
+        return (new DateTime(start, 1, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(end, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddYears(1));
+    }
+
+    /// <summary>Adds the archive v2 participations to <paramref name="result"/>; on timeout or failure the result stays as it is and <c>X-Archive-Warning</c> is set.</summary>
+    private async Task AddArchiveV2Async(PlayerAuctionHistory result, Guid guid, ParticipationType? type, int startYear, int endYear, int limit, DateTime? scyllaCutoff, CancellationToken ct)
+    {
+        var (from, to) = ArchiveYearRange(startYear, endYear);
+        var read = await archiveV2.ReadOrFallbackAsync(token => archiveV2.GetPlayerParticipationsAsync(guid, type, from, to, limit, token), new List<PlayerParticipationEntry>(), "player participations", ct);
+        if (read.Warning != null && Response != null)
+            Response.Headers["X-Archive-Warning"] = read.Warning;
+        var archived = scyllaCutoff == null ? read.Value : read.Value.Where(p => p.End < scyllaCutoff).ToList();
+        var known = result.ArchivedParticipations.Select(p => (p.AuctionUid, p.Type)).ToHashSet();
+        result.ArchivedParticipations = result.ArchivedParticipations
+            .Concat(archived.Where(p => !known.Contains((p.AuctionUid, p.Type))))
+            .OrderByDescending(p => p.End)
+            .ToList();
+        result.S3ArchiveCount = result.ArchivedParticipations.Count;
     }
 
     /// <summary>

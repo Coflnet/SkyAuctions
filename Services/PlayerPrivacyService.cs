@@ -57,6 +57,26 @@ public class PlayerExport
     public List<int> S3ParticipationYears { get; set; } = new();
     public Dictionary<int, List<PlayerParticipationEntry>> S3Participation { get; set; } = new();
     public string NotCovered { get; set; }
+    /// <summary>
+    /// The player's auctions and bids in the R2 archive v2 (auctions/v2/{tag}/{yyyy-MM}/{part}.msgpack.br, located through MariaDB auction_locations).
+    /// Not part of the erase scope check: erase does not touch the archive, that is SkyIndexer's `privacy erase` (ArchivePlayerErasure).
+    /// </summary>
+    public List<ArchivedPlayerEntry> ArchiveV2 { get; set; } = new();
+    /// <summary>True when ArchiveV2 is incomplete: it stops at the safety cap while the player has more entries, or listing it failed (the reason is appended to <see cref="NotCovered"/>)</summary>
+    public bool ArchiveV2Truncated { get; set; }
+}
+
+/// <summary>An auction of the R2 archive v2 the exported player sold (<c>Seller</c>) or bid on (<c>Bidder</c>), from the <c>auction_sellers</c>/<c>auction_bidders</c> index; informational, erase ignores it</summary>
+public class ArchivedPlayerEntry
+{
+    public string Role { get; set; }
+    public long AuctionUid { get; set; }
+    public DateTime End { get; set; }
+    /// <summary>Tag of the archive block, null when the uid has no auction_locations row</summary>
+    public string Tag { get; set; }
+    /// <summary>Month of the archive block, yyyyMM, 0 without location</summary>
+    public int Month { get; set; }
+    public int Part { get; set; }
 }
 
 public class PlayerEraseResult
@@ -86,6 +106,12 @@ public interface IPlayerPrivacyStore
     Task<Dictionary<int, List<PlayerParticipationEntry>>> GetS3Participation(Guid player, CancellationToken ct);
     /// <summary>Deletes all player index objects, returns how many</summary>
     Task<int> DeleteS3PlayerIndex(Guid player, CancellationToken ct);
+    /// <summary>
+    /// The player's seller and bidder index entries of the R2 archive v2 (empty when the archive is not enabled or the player is unknown), whether the list is incomplete
+    /// (cut at the cap, or the listing failed) and why (null when complete). A failing listing must not fail the export.
+    /// </summary>
+    Task<(List<ArchivedPlayerEntry> Entries, bool Truncated, string Reason)> GetArchiveV2Participation(Guid player, CancellationToken ct)
+        => Task.FromResult((new List<ArchivedPlayerEntry>(), false, (string)null));
 }
 
 /// <summary>
@@ -95,7 +121,8 @@ public interface IPlayerPrivacyStore
 public class PlayerPrivacyService
 {
     public const string NotCoveredNote = "Auctions where the player is only a coop member are not included because finding them would need a full table scan; "
-        + "coop-only auctions are scrubbed lazily at read time. S3 auction archive blobs are scrubbed lazily the next time they are read or written.";
+        + "coop-only auctions are scrubbed lazily at read time. S3 auction archive blobs are scrubbed lazily the next time they are read or written. "
+        + "ArchiveV2 lists the player's entries in the R2 archive v2 for information only: this erase does not change them (SkyIndexer 'privacy erase' anonymises the archive blocks).";
 
     /// <summary>Maximum number of per auction queries in flight at once</summary>
     public const int MaxConcurrency = 8;
@@ -126,6 +153,9 @@ public class PlayerPrivacyService
         sw.Restart();
         var s3 = await store.GetS3Participation(player, ct);
         Log("Privacy export {Player}: s3 participation {Years} years in {Elapsed}ms", player, s3.Count, sw.ElapsedMilliseconds);
+        sw.Restart();
+        var (archiveEntries, archiveTruncated, archiveReason) = await store.GetArchiveV2Participation(player, ct);
+        Log("Privacy export {Player}: {Count} archive v2 entries (truncated: {Truncated}) in {Elapsed}ms", player, archiveEntries.Count, archiveTruncated, sw.ElapsedMilliseconds);
         Log("Privacy export {Player} done: {Auctions} auctions in {Elapsed}ms", player, rows.Count, total.ElapsedMilliseconds);
         return new PlayerExport
         {
@@ -135,7 +165,9 @@ public class PlayerPrivacyService
             Auctions = rows.Values.Select(ToExported).ToList(),
             S3ParticipationYears = s3.Keys.OrderBy(y => y).ToList(),
             S3Participation = s3,
-            NotCovered = NotCoveredNote
+            NotCovered = archiveReason == null ? NotCoveredNote : NotCoveredNote + " ArchiveV2 is INCOMPLETE: " + archiveReason + ".",
+            ArchiveV2 = archiveEntries,
+            ArchiveV2Truncated = archiveTruncated
         };
     }
 

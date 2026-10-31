@@ -186,13 +186,17 @@ public class Startup
             // Auction archive v2 read side (/api/archive/v2/..., Controllers/ArchiveV2Controller.cs): R2 blocks + read-only MariaDB index tables
             Coflnet.Sky.Core.Archive.ArchivedAuctionReaderServiceCollectionExtensions.AddArchivedAuctionReader(services);
             services.AddSingleton<Archive.ArchiveReadService>();
-            if (Configuration.GetValue<bool>("ARCHIVE:ENABLED"))
+            if (Configuration.GetValue<bool>("ARCHIVE:ENABLED") || Configuration.GetValue<bool>("ARCHIVE:AUDIT_ENABLED"))
             {
                 // own multiplexer: the service's REDIS_HOST (sky-auctions-redis) is retired
                 services.AddKeyedSingleton<IConnectionMultiplexer>(Archive.ScyllaArchiveRedis.ServiceKey, (_, _) => Archive.ScyllaArchiveRedis.Connect(Configuration));
                 services.AddSingleton<Archive.IScyllaArchiveMarkers>(p => new Archive.RedisScyllaArchiveMarkers(
                     () => p.GetRequiredKeyedService<IConnectionMultiplexer>(Archive.ScyllaArchiveRedis.ServiceKey)));
-                services.AddHostedService<Archive.ScyllaArchiveSweep>();
+                if (Configuration.GetValue<bool>("ARCHIVE:ENABLED"))
+                    services.AddHostedService<Archive.ScyllaArchiveSweep>();
+                // read-only audit of Scylla against the R2 archive (writes only its result objects under auctions/v2/_meta/audit/)
+                if (Configuration.GetValue<bool>("ARCHIVE:AUDIT_ENABLED"))
+                    services.AddHostedService<Archive.ScyllaArchiveAudit>();
             }
         }
 

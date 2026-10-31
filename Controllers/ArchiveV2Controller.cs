@@ -181,13 +181,14 @@ public class ArchiveV2Controller : ControllerBase
     /// <param name="fromMonth">First month (yyyy-MM, inclusive)</param>
     /// <param name="toMonth">Last month (yyyy-MM, inclusive)</param>
     /// <param name="limit">Auctions to return, default 100, at most 1000</param>
-    /// <param name="before">Paging cursor <c>endUnixSeconds:uid</c>: only auctions after this position (newest first). A full page sets the response header <c>X-Next-Before</c> to the cursor of the next page</param>
+    /// <param name="before">Paging cursor <c>endUnixSeconds:uid</c>: only auctions after this position (newest first). The response header <c>X-Next-Before</c> carries the cursor of the next page whenever the index has more rows (taken from the last index row of this page, also when some rows had no readable block and the page is shorter than the limit)</param>
+    /// <param name="deletedOnly">Only auctions ending in months whose MariaDB rows are deleted (sentinel deleted_at set or deleted_rows &gt; 0); decided on the index rows before any block is read. A page can be empty while <c>X-Next-Before</c> is set</param>
     /// <param name="ct">Cancellation token</param>
     [HttpGet("player/{bidderId:int}/bids")]
     [ProducesResponseType(typeof(List<ArchivedAuctionDto>), 200)]
     [ProducesResponseType(400)]
     [ProducesResponseType(503)]
-    public async Task<ActionResult<List<ArchivedAuctionDto>>> GetPlayerBids(int bidderId, string fromMonth = null, string toMonth = null, int? limit = null, string before = null, CancellationToken ct = default)
+    public async Task<ActionResult<List<ArchivedAuctionDto>>> GetPlayerBids(int bidderId, string fromMonth = null, string toMonth = null, int? limit = null, string before = null, bool deletedOnly = false, CancellationToken ct = default)
     {
         if (service == null)
             return Disabled();
@@ -209,7 +210,7 @@ public class ArchiveV2Controller : ControllerBase
         AuctionIndexCursor cursor = null;
         if (before != null && !AuctionIndexCursor.TryParse(before, out cursor))
             return BadRequest($"Invalid before {before}, expected endUnixSeconds:uid");
-        return OkPage(await service.GetBidsAsync((uint)bidderId, from, to, limit, cursor, ct), limit);
+        return OkPage(await service.GetBidsPageAsync((uint)bidderId, from, to, limit, cursor, deletedOnly, ct));
     }
 
     /// <summary>
@@ -219,13 +220,14 @@ public class ArchiveV2Controller : ControllerBase
     /// <param name="fromMonth">First month (yyyy-MM, inclusive)</param>
     /// <param name="toMonth">Last month (yyyy-MM, inclusive)</param>
     /// <param name="limit">Auctions to return, default 100, at most 1000</param>
-    /// <param name="before">Paging cursor <c>endUnixSeconds:uid</c>: only auctions after this position (newest first). A full page sets the response header <c>X-Next-Before</c> to the cursor of the next page</param>
+    /// <param name="before">Paging cursor <c>endUnixSeconds:uid</c>: only auctions after this position (newest first). The response header <c>X-Next-Before</c> carries the cursor of the next page whenever the index has more rows (taken from the last index row of this page, also when some rows had no readable block and the page is shorter than the limit)</param>
+    /// <param name="deletedOnly">Only auctions ending in months whose MariaDB rows are deleted (sentinel deleted_at set or deleted_rows &gt; 0); decided on the index rows before any block is read. A page can be empty while <c>X-Next-Before</c> is set</param>
     /// <param name="ct">Cancellation token</param>
     [HttpGet("player/{sellerId:int}/sells")]
     [ProducesResponseType(typeof(List<ArchivedAuctionDto>), 200)]
     [ProducesResponseType(400)]
     [ProducesResponseType(503)]
-    public async Task<ActionResult<List<ArchivedAuctionDto>>> GetPlayerSells(int sellerId, string fromMonth = null, string toMonth = null, int? limit = null, string before = null, CancellationToken ct = default)
+    public async Task<ActionResult<List<ArchivedAuctionDto>>> GetPlayerSells(int sellerId, string fromMonth = null, string toMonth = null, int? limit = null, string before = null, bool deletedOnly = false, CancellationToken ct = default)
     {
         if (service == null)
             return Disabled();
@@ -247,7 +249,7 @@ public class ArchiveV2Controller : ControllerBase
         AuctionIndexCursor cursor = null;
         if (before != null && !AuctionIndexCursor.TryParse(before, out cursor))
             return BadRequest($"Invalid before {before}, expected endUnixSeconds:uid");
-        return OkPage(await service.GetSellsAsync((uint)sellerId, from, to, limit, cursor, ct), limit);
+        return OkPage(await service.GetSellsPageAsync((uint)sellerId, from, to, limit, cursor, deletedOnly, ct));
     }
 
     /// <summary>
@@ -269,15 +271,12 @@ public class ArchiveV2Controller : ControllerBase
         return Ok(await service.VerifyAsync(tag, parsed, ct));
     }
 
-    /// <summary>200 with the page; a full page also carries <c>X-Next-Before</c> (the cursor of its last auction).</summary>
-    private ActionResult<List<ArchivedAuctionDto>> OkPage(List<ArchivedAuctionDto> page, int? limit)
+    /// <summary>200 with the page; <c>X-Next-Before</c> carries the cursor of the next page when the index has more rows.</summary>
+    private ActionResult<List<ArchivedAuctionDto>> OkPage(ArchivedPlayerPage page)
     {
-        if (page.Count > 0 && page.Count >= ArchiveReadService.ClampLimit(limit, ArchiveReadService.DefaultBidLimit, ArchiveReadService.MaxBidLimit))
-        {
-            var last = page[^1];
-            Response.Headers["X-Next-Before"] = AuctionIndexCursor.After(last.End, last.Uid).ToString();
-        }
-        return Ok(page);
+        if (page.Next != null)
+            Response.Headers["X-Next-Before"] = page.Next.ToString();
+        return Ok(page.Auctions);
     }
 
     private ObjectResult Disabled() => StatusCode(503, "Auction archive (S3) not enabled");

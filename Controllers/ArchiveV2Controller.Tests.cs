@@ -25,6 +25,7 @@ public class ArchiveV2ControllerTests
     private InMemoryAuctionBlobStore store;
     private FakeLookup lookup;
     private ArchiveV2Controller controller;
+    private readonly HashSet<int> deletedMonths = new();
 
     private class FakeLookup : IArchiveLocationLookup
     {
@@ -60,7 +61,9 @@ public class ArchiveV2ControllerTests
         store = new InMemoryAuctionBlobStore();
         lookup = new FakeLookup();
         var reader = new ArchivedAuctionReader(store, lookup, NullLogger.Instance);
-        controller = new ArchiveV2Controller(new ArchiveReadService(reader, (id, _) => Task.FromResult(PlayerUuids.GetValueOrDefault(id))))
+        deletedMonths.Clear();
+        controller = new ArchiveV2Controller(new ArchiveReadService(reader, (id, _) => Task.FromResult(PlayerUuids.GetValueOrDefault(id)), lookup: lookup,
+            deletedMonths: _ => Task.FromResult(deletedMonths.ToHashSet()), deletedMonthsTtl: TimeSpan.Zero))
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() },
         };
@@ -315,6 +318,131 @@ public class ArchiveV2ControllerTests
         Assert.That(bids.Select(a => a.Uid), Is.EqualTo(new long[] { 5, 1 }));
         Assert.That(StatusOf(await controller.GetPlayerSells(9, null, null, null, "garbage")), Is.EqualTo(400));
         Assert.That(StatusOf(await controller.GetPlayerBids(9, null, null, null, "5")), Is.EqualTo(400));
+    }
+
+    private static uint EndSeconds(DateTime end) => (uint)new DateTimeOffset(end).ToUnixTimeSeconds();
+
+    /// <summary>Archives rows in a block of their own (part <paramref name="part"/> of the month) and lists them as auctions sold by player 9.</summary>
+    private void ArchiveExtra(int month, int part, params SaveAuction[] rows)
+    {
+        store.WriteBlockAsync(ArchivedAuctionBlock.FromAuctions(Hyperion, month, part, ArchivedAuctionBlock.SourceMariaDb, rows)).Wait();
+        foreach (var row in rows)
+        {
+            lookup.Locations[row.UId] = new AuctionLocation { Uid = row.UId, TagId = HyperionId, Month = ArchiveMonths.ToIndex(month), Part = (byte)part };
+            lookup.Sellers.Add(new AuctionSeller { SellerId = 9, Uid = row.UId, End = EndSeconds(row.End) });
+        }
+    }
+
+    private async Task<(List<long> Uids, List<string> Headers)> PageThrough(Func<string, Task<ActionResult<List<ArchivedAuctionDto>>>> fetch, int maxPages = 20)
+    {
+        var uids = new List<long>();
+        var headers = new List<string>();
+        string cursor = null;
+        for (var page = 0; page < maxPages; page++)
+        {
+            controller.Response.Headers.Remove("X-Next-Before");
+            uids.AddRange(OkValue(await fetch(cursor)).Select(a => a.Uid));
+            if (!controller.Response.Headers.TryGetValue("X-Next-Before", out var next))
+                break;
+            cursor = next.ToString();
+            headers.Add(cursor);
+        }
+        return (uids, headers);
+    }
+
+    [Test]
+    public async Task NextBeforeComesFromTheIndexRows_APageShortenedByUnlocatedRowsDoesNotEndPaging()
+    {
+        ArchiveSeptember();
+        foreach (var (uid, day) in new[] { (1L, 1), (3L, 8), (6L, 25) })
+            lookup.Sellers.Add(new AuctionSeller { SellerId = 9, Uid = uid, End = EndSeconds(SepStart.AddDays(day)) });
+        // two newer index rows whose auctions have no location (never archived or location row lost)
+        lookup.Sellers.Add(new AuctionSeller { SellerId = 9, Uid = 98, End = EndSeconds(SepStart.AddDays(28)) });
+        lookup.Sellers.Add(new AuctionSeller { SellerId = 9, Uid = 99, End = EndSeconds(SepStart.AddDays(29)) });
+
+        var first = OkValue(await controller.GetPlayerSells(9, null, null, 2));
+
+        Assert.That(first, Is.Empty, "both index rows of the first page are unlocated");
+        Assert.That(controller.Response.Headers["X-Next-Before"].ToString(), Is.EqualTo($"{EndSeconds(SepStart.AddDays(28))}:98"), "the cursor is the last index row, not the last returned auction");
+
+        var (uids, headers) = await PageThrough(cursor => controller.GetPlayerSells(9, null, null, 2, cursor));
+        Assert.That(uids, Is.EqualTo(new long[] { 6, 3, 1 }), "paging went on past the empty page, without repeats");
+        Assert.That(headers.Count, Is.GreaterThan(0));
+    }
+
+    [Test]
+    public async Task NextBeforeFollowsTheIndexOrderWhenEndsShareASecond()
+    {
+        ArchiveSeptember();
+        var second = SepStart.AddDays(10);
+        var a = Row(7, 10, 0); // ends .900 into the second: newer by End, lower uid
+        a.End = second.AddMilliseconds(900);
+        var b = Row(8, 10, 0); // ends .100: older by End, higher uid, so the index (End seconds, uid) lists it first
+        b.End = second.AddMilliseconds(100);
+        ArchiveExtra(Sep, 2, a, b);
+        lookup.Sellers.Add(new AuctionSeller { SellerId = 9, Uid = 1, End = EndSeconds(SepStart.AddDays(1)) });
+
+        var (uids, _) = await PageThrough(cursor => controller.GetPlayerSells(9, null, null, 2, cursor));
+
+        Assert.That(uids.OrderBy(u => u), Is.EqualTo(new long[] { 1, 7, 8 }));
+        Assert.That(uids, Is.Unique, "no auction is returned twice");
+    }
+
+    [Test]
+    public async Task DeletedOnlyKeepsOnlyAuctionsOfMonthsWhoseMariaDbRowsAreDeleted()
+    {
+        ArchiveSeptember();
+        foreach (var uid in new[] { 1L, 3L })
+            lookup.Sellers.Add(new AuctionSeller { SellerId = 9, Uid = uid, End = EndSeconds(SepStart.AddDays(uid == 1 ? 1 : 8)) });
+        var october = new DateTime(2020, 10, 5, 0, 0, 0, DateTimeKind.Utc);
+        var oct = Row(20, 1, 300);
+        oct.End = october;
+        ArchiveExtra(202010, 0, oct);
+
+        Assert.That(OkValue(await controller.GetPlayerSells(9)).Select(a => a.Uid), Is.EqualTo(new long[] { 20, 3, 1 }), "default: unchanged, everything");
+        Assert.That(OkValue(await controller.GetPlayerSells(9, deletedOnly: true)), Is.Empty, "no month deleted");
+
+        deletedMonths.Add(202010);
+        store.Events.Clear();
+        Assert.That(OkValue(await controller.GetPlayerSells(9, deletedOnly: true)).Select(a => a.Uid), Is.EqualTo(new long[] { 20 }));
+        Assert.That(store.Events.Where(e => e.StartsWith("read:")).All(e => e.StartsWith("read:HYPERION:202010:")), Is.True, "no block of a kept month was read");
+
+        deletedMonths.Clear();
+        deletedMonths.Add(Sep);
+        Assert.That(OkValue(await controller.GetPlayerSells(9, deletedOnly: true)).Select(a => a.Uid), Is.EqualTo(new long[] { 3, 1 }));
+    }
+
+    [Test]
+    public async Task DeletedOnlyPagesWithTheCursorOfTheLastScannedIndexRow()
+    {
+        ArchiveSeptember();
+        foreach (var uid in new[] { 1L, 3L })
+            lookup.Sellers.Add(new AuctionSeller { SellerId = 9, Uid = uid, End = EndSeconds(SepStart.AddDays(uid == 1 ? 1 : 8)) });
+        var oct = Row(20, 1, 300);
+        oct.End = new DateTime(2020, 10, 5, 0, 0, 0, DateTimeKind.Utc);
+        ArchiveExtra(202010, 0, oct);
+        deletedMonths.Add(Sep);
+
+        var (uids, headers) = await PageThrough(cursor => controller.GetPlayerSells(9, null, null, 1, cursor, deletedOnly: true));
+
+        Assert.That(uids, Is.EqualTo(new long[] { 3, 1 }));
+        Assert.That(headers, Is.EqualTo(new[] { $"{EndSeconds(SepStart.AddDays(8))}:3" }), "set after the first full page, absent once the index is exhausted");
+        Assert.That(OkValue(await controller.GetPlayerSells(9, deletedOnly: true, before: $"{EndSeconds(SepStart.AddDays(8))}:3")).Select(a => a.Uid), Is.EqualTo(new long[] { 1 }));
+        controller.Response.Headers.Remove("X-Next-Before");
+        Assert.That(OkValue(await controller.GetPlayerBids(9, deletedOnly: true)), Is.Empty, "bids have the same parameter, nothing indexed");
+    }
+
+    [Test]
+    public async Task DeletedOnlyAppliesToBidsToo()
+    {
+        ArchiveSeptember();
+        lookup.Bidders.Add(new AuctionBidder { BidderId = 9, Uid = 1, End = EndSeconds(SepStart.AddDays(1)) });
+        deletedMonths.Add(Sep);
+
+        Assert.That(OkValue(await controller.GetPlayerBids(9, deletedOnly: true)).Select(a => a.Uid), Is.EqualTo(new long[] { 1 }));
+        deletedMonths.Clear();
+        Assert.That(OkValue(await controller.GetPlayerBids(9, deletedOnly: true)), Is.Empty);
+        Assert.That(OkValue(await controller.GetPlayerBids(9)).Select(a => a.Uid), Is.EqualTo(new long[] { 1 }));
     }
 
     [Test]

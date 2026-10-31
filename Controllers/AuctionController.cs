@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using System;
 using System.Linq;
 using Microsoft.EntityFrameworkCore;
+using Coflnet.Sky.Auctions.Archive;
 using Coflnet.Sky.Auctions.Services;
 using Coflnet.Sky.Core;
 using System.Collections.Generic;
@@ -19,13 +20,18 @@ public class AuctionController : ControllerBase
     private readonly ScyllaService scyllaService;
     private readonly QueryService queryService;
     private readonly UuidLookupService uuidLookup;
+    private readonly ArchiveReadService archive;
 
     /// <summary>
     /// Creates a new instance of <see cref="AuctionController"/>
     /// </summary>
     /// <param name="service"></param>
-    public AuctionController(ScyllaService service, QueryService queryService, UuidLookupService uuidLookup)
+    /// <param name="queryService"></param>
+    /// <param name="uuidLookup"></param>
+    /// <param name="archive">R2 archive v2 reader, null when the S3 archive is not enabled</param>
+    public AuctionController(ScyllaService service, QueryService queryService, UuidLookupService uuidLookup, ArchiveReadService archive = null)
     {
+        this.archive = archive;
         this.scyllaService = service;
         this.queryService = queryService;
         this.uuidLookup = uuidLookup;
@@ -118,6 +124,14 @@ public class AuctionController : ControllerBase
     {
         if (end == default)
             end = DateTime.UtcNow;
-        return await scyllaService.GetRecentFromPlayer(Guid.Parse(uuid), end, amount);
+        var player = Guid.Parse(uuid);
+        var recent = (await scyllaService.GetRecentFromPlayer(player, end, amount)).ToList();
+        if (archive == null || recent.Count >= amount)
+            return recent;
+        // Scylla has fewer than asked for (old rows get deleted once they are in the R2 archive): continue with the archived sells
+        var continued = await archive.ContinueFromArchiveOrFallbackAsync(player, end, amount, recent, HttpContext?.RequestAborted ?? default);
+        if (continued.Warning != null && Response != null)
+            Response.Headers["X-Archive-Warning"] = continued.Warning;
+        return continued.Value;
     }
 }

@@ -273,4 +273,12 @@ public class ScyllaArchiveRowsTests
         Assert.That(fromBlock, Is.EqualTo(new Fingerprint(900, true, FullAuction().End.Ticks, FullAuction().NbtData.data.Length, 500)));
         Assert.That(Fingerprint.Of(ScyllaService.ToCassandra(FullAuction())), Is.EqualTo(fromBlock));
     }
+
+    [Test]
+    public void ForAudit_OfAReadBackRow_EqualsTheBlockRowFingerprint()
+    {
+        var block = ArchivedAuctionBlock.FromAuctions(Tag, Sep, 0, ArchivedAuctionBlock.SourceMariaDb, new[] { FullAuction() });
+
+        Assert.That(Fingerprint.ForAudit(block.ToAuction(0)), Is.EqualTo(Fingerprint.ForAudit(block, 0)));
+    }
 }

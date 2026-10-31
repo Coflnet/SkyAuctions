@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using Coflnet.Sky.Auctions.Archive;
 using Coflnet.Sky.Auctions.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
@@ -19,9 +20,9 @@ public class PrivacyController : ControllerBase
     /// <summary>
     /// Creates the controller, the S3 services are only present when S3 is enabled
     /// </summary>
-    public PrivacyController(ScyllaService scyllaService, ILoggerFactory loggerFactory, S3StorageService s3 = null, S3PlayerIndexService playerIndex = null)
+    public PrivacyController(ScyllaService scyllaService, ILoggerFactory loggerFactory, S3StorageService s3 = null, S3PlayerIndexService playerIndex = null, ArchiveReadService archiveV2 = null)
     {
-        service = new PlayerPrivacyService(new ScyllaPlayerPrivacyStore(scyllaService, s3, playerIndex, loggerFactory.CreateLogger<ScyllaPlayerPrivacyStore>()), loggerFactory.CreateLogger<PlayerPrivacyService>());
+        service = new PlayerPrivacyService(new ScyllaPlayerPrivacyStore(scyllaService, s3, playerIndex, loggerFactory.CreateLogger<ScyllaPlayerPrivacyStore>(), archiveV2), loggerFactory.CreateLogger<PlayerPrivacyService>());
     }
 
     /// <summary>

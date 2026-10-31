@@ -237,3 +237,48 @@ internal class InMemoryMarkers : IScyllaArchiveMarkers
         return Task.CompletedTask;
     }
 }
+
+/// <summary>Dictionary-backed <see cref="IArchiveLocationLookup"/> (the MariaDB archive tables) with a call log.</summary>
+internal class InMemoryLocationLookup : IArchiveLocationLookup
+{
+    public readonly Dictionary<ushort, string> Tags = new();
+    public readonly Dictionary<long, AuctionLocation> Locations = new();
+    public readonly List<AuctionBidder> Bidders = new();
+    public readonly List<AuctionSeller> Sellers = new();
+    public readonly Dictionary<(string, int), ArchivedMonth> Months = new();
+    public readonly List<string> Calls = new();
+    /// <summary>Thrown by <see cref="GetBidderRowsAsync"/> (the database fails part way through a listing).</summary>
+    public Exception BidderRowsFailure;
+    /// <summary>Runs after every <see cref="GetSellerRowsAsync"/> result was computed, e.g. to insert rows between two queries.</summary>
+    public Action AfterSellerRows;
+
+    public Task<AuctionLocation> GetLocationAsync(long uid, CancellationToken cancellationToken = default)
+    {
+        Calls.Add("location:" + uid);
+        return Task.FromResult(Locations.GetValueOrDefault(uid));
+    }
+
+    public Task<IReadOnlyDictionary<long, AuctionLocation>> GetLocationsAsync(IReadOnlyCollection<long> uids, CancellationToken cancellationToken = default)
+    {
+        Calls.Add("locations:" + uids.Count);
+        return Task.FromResult<IReadOnlyDictionary<long, AuctionLocation>>(uids.Where(Locations.ContainsKey).Distinct().ToDictionary(u => u, u => Locations[u]));
+    }
+
+    public Task<string> GetTagNameAsync(ushort tagId, CancellationToken cancellationToken = default) => Task.FromResult(Tags.GetValueOrDefault(tagId));
+
+    public Task<IReadOnlyList<AuctionBidder>> GetBidderRowsAsync(uint bidderId, uint fromUnixSeconds, uint toUnixSeconds, int limit, AuctionIndexCursor before = null, CancellationToken cancellationToken = default)
+        => BidderRowsFailure != null ? Task.FromException<IReadOnlyList<AuctionBidder>>(BidderRowsFailure) : Task.FromResult<IReadOnlyList<AuctionBidder>>(Bidders.Where(b => b.BidderId == bidderId && b.End >= fromUnixSeconds && b.End < toUnixSeconds && (before == null || b.End < before.End || b.End == before.End && b.Uid < before.Uid))
+            .OrderByDescending(b => b.End).ThenByDescending(b => b.Uid).Take(limit).ToList());
+
+    public Task<IReadOnlyList<AuctionSeller>> GetSellerRowsAsync(uint sellerId, uint fromUnixSeconds, uint toUnixSeconds, int limit, AuctionIndexCursor before = null, CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"sellers:{sellerId}:{fromUnixSeconds}:{toUnixSeconds}:{limit}");
+        IReadOnlyList<AuctionSeller> rows = Sellers.Where(b => b.SellerId == sellerId && b.End >= fromUnixSeconds && b.End < toUnixSeconds && (before == null || b.End < before.End || b.End == before.End && b.Uid < before.Uid))
+            .OrderByDescending(b => b.End).ThenByDescending(b => b.Uid).Take(limit).ToList();
+        AfterSellerRows?.Invoke();
+        return Task.FromResult(rows);
+    }
+
+    public Task<ArchivedMonth> GetArchivedMonthAsync(string tag, int month, CancellationToken cancellationToken = default)
+        => Task.FromResult(Months.GetValueOrDefault((tag, month)));
+}

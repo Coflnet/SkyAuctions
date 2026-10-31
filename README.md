@@ -479,3 +479,23 @@ configured-root validation or normal OS validation when no root is configured.
 `/health/ready` performs only `SELECT key FROM system.local`, bounded to five
 seconds; the existing `/metrics` readiness probe and worker timings are unchanged.
 Kafka, Redis, internal HTTP, SQL and archive TLS are outside this opt-in.
+
+## R2 archive v2 fallbacks and the Scylla audit
+
+Before old rows are deleted from MariaDB and Scylla every reader has to survive on the R2 archive v2 (`auctions/v2/...`, located through `auction_locations`):
+- `GET`/`POST /api/auction/{uuid}`: Scylla, then `UuidLookupService` (MariaDB, Scylla, legacy S3 v1) and, as the last tier, the archive reader (same `SaveAuction` JSON).
+- `GET /api/player/{uuid}/auctions`: when Scylla returns fewer than `amount` auctions, the archived sells that ended before `end` (via `auction_sellers`) are appended.
+- `GET /api/player/archive/{uuid}/history`: archived sells/bids of the years asked for are added to `ArchivedParticipations`.
+- Privacy export (`GET /api/privacy/player/{uuid}`): `ArchiveV2` lists the player's seller/bidder index entries (uid, end, tag, month, part). The erase of this service does not change the archive; `privacy erase` of SkyIndexer (`ArchivePlayerErasure`) does.
+- The sweep refuses to write any part, tag index, manifest or marker of a month whose `archived_months` rows have `deleted_at` / `deleted_rows > 0` (metric `sky_auctions_archive_refused_deleted_month`), redo included.
+
+`ScyllaArchiveAudit` (`ARCHIVE:AUDIT_ENABLED`, default off, read only) classifies every Scylla row of the months `AUDIT_MONTHS` (default: the sweep's range) against R2 as `equal`, `r2_better_superset`, `needs_merge`, `missing` or `bogus_end` under the equivalence table in `Services/Archive/ScyllaAuditEquivalence.cs`, at `AUDIT_CONSISTENCY` (default `ALL`), throttled by `AUDIT_PARTITIONS_PER_MINUTE`. Results: `auctions/v2/_meta/audit/scylla/{yyyy-MM}.msgpack.br` (per class and column counts, samples, per partition row count, End range, max WRITETIME and a SHA-256 of the rows; a 200 uid read-back through the public reader) and the metrics `sky_auctions_archive_audit_rows{class}`, `_audit_partitions_done`, `_audit_column_diffs{column}`. Progress: Redis `auctions_archive:v2:audit:{yyyy-MM}`; delete the key and the result object to audit a month again.
+
+**Deletion gate semantics** (what a delete step may rely on):
+- A Scylla partition is *covered* only if it is not `Unreadable` and every one of its rows is `equal` or `r2_better_superset`. One `needs_merge`, `missing`, `bogus_end` or unreadable row (or a row whose `serialisedbids` blob is corrupt: column `serialisedbids_unreadable`, class `needs_merge`) makes the whole partition not covered.
+- A partition that spans several months is covered only when every month it overlaps passes; a single failing month blocks it.
+- `bogus_end` rows (End before 2019-06, the random-timekey garbage) are never covered, even when R2 has a matching row.
+- A set `CompletedAt` does **not** mean the month is clean: check `ClassCounts["unreadable"]` (unreadable partitions are retried in the next pass) and the Redis marker (`done:{iso}` is clean, `unreadable:{n}:{iso}` is not, `progress:...` is still running).
+- The proof is against the tag index entry's `PartSha256` (the audit verifies the located block against it), **not** against `archived_months.sha256` of MariaDB. Known gap: the two are not cross-checked by the audit.
+
+`GET /api/player/{uuid}/auctions` and `GET /api/player/archive/{uuid}/history` bound their archive part by `ARCHIVE:READ_TIMEOUT_MS` (default 3000): on timeout or failure they answer with the non-archive result and the response header `X-Archive-Warning: timeout|failed`.

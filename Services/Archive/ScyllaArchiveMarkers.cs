@@ -85,6 +85,12 @@ namespace Coflnet.Sky.Auctions.Archive
         /// <summary><c>auctions_archive:v2:redo:{yyyy-MM}</c>: set by the operator (any value) to have the sweep archive the month again.</summary>
         public static string Redo(int month) => Prefix + "redo:" + ArchiveMonths.Format(month);
 
+        /// <summary>
+        /// <c>auctions_archive:v2:audit:{yyyy-MM}</c>: progress of the read-only Scylla audit of a month, <c>progress:{nextPartition}/{partitions}:{iso}</c>
+        /// while running and <c>done:{iso}</c> once the month's result object is complete.
+        /// </summary>
+        public static string Audit(int month) => Prefix + "audit:" + ArchiveMonths.Format(month);
+
         /// <summary><c>archived:{scyllaOnlyRows}:{newParts}:{iso}</c></summary>
         public static string Archived(int scyllaOnlyRows, int newParts, DateTime at) => FormattableString.Invariant($"archived:{scyllaOnlyRows}:{newParts}:{Iso(at)}");
 

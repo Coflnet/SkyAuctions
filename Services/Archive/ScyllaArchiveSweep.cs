@@ -149,6 +149,7 @@ namespace Coflnet.Sky.Auctions.Archive
         private static readonly Prometheus.Counter partitionsRead = Prometheus.Metrics.CreateCounter("sky_auctions_archive_partitions_read", "Scylla partitions read completely");
         private static readonly Prometheus.Counter pageRetries = Prometheus.Metrics.CreateCounter("sky_auctions_archive_page_retries", "Scylla page retries");
         private static readonly Prometheus.Counter errors = Prometheus.Metrics.CreateCounter("sky_auctions_archive_errors", "Scylla sweep errors (failed tag-months, failed passes, MariaDB/Redis unavailable)");
+        internal static readonly Prometheus.Counter refusedDeletedMonth = Prometheus.Metrics.CreateCounter("sky_auctions_archive_refused_deleted_month", "Writes the sweep refused because the month or tag-month has MariaDB rows deleted (archived_months.deleted_at / deleted_rows)");
         private static readonly Prometheus.Gauge currentMonth = Prometheus.Metrics.CreateGauge("sky_auctions_archive_current_month", "Month (yyyyMM) being swept");
         private static readonly Prometheus.Counter partitionScanRetries = Prometheus.Metrics.CreateCounter("sky_auctions_archive_partition_scan_retries", "Partition scan pages retried after a Scylla timeout");
         private static readonly Prometheus.Counter partitionScanSplits = Prometheus.Metrics.CreateCounter("sky_auctions_archive_partition_scan_splits", "Token ranges halved because they kept timing out");
@@ -281,11 +282,19 @@ namespace Coflnet.Sky.Auctions.Archive
             for (var month = options.OldestMonth; month <= options.NewestMonth; month = ArchiveMonths.Next(month))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (await markers.GetAsync(ScyllaArchiveMarkerKeys.Redo(month)).ConfigureAwait(false) != null
-                    && !await PrepareRedoAsync(month, nowUtc, options, cancellationToken).ConfigureAwait(false))
+                if (await markers.GetAsync(ScyllaArchiveMarkerKeys.Redo(month)).ConfigureAwait(false) != null)
                 {
-                    lastPassWaitingForImport = true;
-                    return 0;
+                    // a redo resets markers and the manifest and rewrites parts: never for a month whose source rows are (partly) deleted
+                    if (await IsMonthDeletedAsync(month, cancellationToken).ConfigureAwait(false))
+                    {
+                        RefuseDeleted(month, "redo", null);
+                        await markers.DeleteAsync(ScyllaArchiveMarkerKeys.Redo(month)).ConfigureAwait(false);
+                    }
+                    else if (!await PrepareRedoAsync(month, nowUtc, options, cancellationToken).ConfigureAwait(false))
+                    {
+                        lastPassWaitingForImport = true;
+                        return 0;
+                    }
                 }
                 var state = await GetMonthStateAsync(month, cancellationToken).ConfigureAwait(false);
                 if (state.ScyllaAt != null)
@@ -453,6 +462,11 @@ namespace Coflnet.Sky.Auctions.Archive
         private async Task<bool> SweepMonthAsync(int month, DateTime nowUtc, ScyllaArchiveOptions options, CancellationToken cancellationToken)
         {
             var monthText = ArchiveMonths.Format(month);
+            if (await IsMonthDeletedAsync(month, cancellationToken).ConfigureAwait(false))
+            {
+                RefuseDeleted(month, "sweep", null);
+                return false;
+            }
             var partitions = await GetPartitionsAsync(nowUtc, options, cancellationToken).ConfigureAwait(false);
             var byTag = partitions.GroupBy(p => p.Tag, StringComparer.Ordinal)
                 .ToDictionary(g => g.Key, g => g.Select(p => p.TimeKey).Distinct().OrderBy(k => k).ToList(), StringComparer.Ordinal);
@@ -891,6 +905,13 @@ namespace Coflnet.Sky.Auctions.Archive
                 return outcome;
             }
 
+            // a0. never write parts, index, manifest or markers for a tag-month whose MariaDB rows are (partly) deleted: the archive is then the only copy
+            if (ScyllaArchiveRows.IsDeleted(row))
+            {
+                RefuseDeleted(month, "tag-month", tag);
+                return Fail($"refused: archived_months of {tag} {monthText} has deleted rows (deleted_at {row.DeletedAt:O}, deleted_rows {row.DeletedRows})");
+            }
+
             // a. phase-1 state
             var index = await store.ReadIndexAsync(tag, cancellationToken).ConfigureAwait(false);
             var entry = index?.Find(month);
@@ -1218,6 +1239,13 @@ namespace Coflnet.Sky.Auctions.Archive
             }
         }
 
+        private void RefuseDeleted(int month, string what, string tag)
+        {
+            refusedDeletedMonth.Inc();
+            logger.LogWarning("Scylla archive: refusing to write {What} of {Tag} {Month}: its archived_months rows have deleted_at / deleted_rows set, the R2 archive is the only copy and must not be overwritten",
+                what, tag ?? "(any tag)", ArchiveMonths.Format(month));
+        }
+
         private void WarnUnknownValue(string column, string value)
         {
             if (warnedValues.TryAdd(column + ":" + value, true))
@@ -1273,6 +1301,18 @@ namespace Coflnet.Sky.Auctions.Archive
             return new ScyllaMonthState(sentinel != null, sentinel?.ScyllaAt);
         }
 
+        /// <summary>
+        /// True when any <c>archived_months</c> row of the month (sentinel <c>tag_id = 0</c> or a tag row) has <c>deleted_at</c> set or
+        /// <c>deleted_rows &gt; 0</c> (SkyIndexer deleted MariaDB rows that the R2 archive now solely holds). Read only.
+        /// </summary>
+        protected virtual async Task<bool> IsMonthDeletedAsync(int month, CancellationToken cancellationToken)
+        {
+            var index = ArchiveMonths.ToIndex(month);
+            using var db = new ArchiveContext();
+            return await db.ArchivedMonths.AsNoTracking()
+                .AnyAsync(m => m.Month == index && (m.DeletedAt != null || m.DeletedRows > 0), cancellationToken).ConfigureAwait(false);
+        }
+
         /// <summary>Id of a tag in <c>auction_tags</c>, null when it has none (read only, cached).</summary>
         protected virtual async Task<ushort?> GetTagIdAsync(string tag, CancellationToken cancellationToken)
         {
@@ -1306,6 +1346,8 @@ namespace Coflnet.Sky.Auctions.Archive
                     ArchivedAt = m.ArchivedAt,
                     VerifiedAt = m.VerifiedAt,
                     ScyllaAt = m.ScyllaAt,
+                    DeletedAt = m.DeletedAt,
+                    DeletedRows = m.DeletedRows,
                 }).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
         }
 

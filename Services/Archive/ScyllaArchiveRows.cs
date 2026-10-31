@@ -30,6 +30,21 @@ namespace Coflnet.Sky.Auctions.Archive
             row.ItemBytes?.Length ?? -1,
             row.StartingBid);
 
+        /// <summary>
+        /// Row <paramref name="index"/> of an archived block under the audit's sold rule (highest bid &gt; 0), the same rule as <see cref="ForAudit(CassandraAuction)"/>
+        /// so that identical rows get identical fingerprints.
+        /// </summary>
+        public static Fingerprint ForAudit(ArchivedAuctionBlock block, int index) => Of(block, index) with { IsSold = block.HighestBidAmount[index] > 0 };
+
+        /// <summary>An archived row read back through the reader under the audit's sold rule; equal to <see cref="ForAudit(ArchivedAuctionBlock, int)"/> of the block row it came from.</summary>
+        public static Fingerprint ForAudit(SaveAuction row) => new(row.HighestBidAmount, row.HighestBidAmount > 0, row.End.Ticks, row.NbtData?.data?.Length ?? -1, row.StartingBid);
+
+        /// <summary>
+        /// A Scylla row under the audit's sold rule (highest bid &gt; 0, the rule the archive blocks derive <c>IsSold</c> by). The raw <c>issold</c> flag
+        /// is not used: it is false for every row written before its auction ended and would make identical rows with bids look different.
+        /// </summary>
+        public static Fingerprint ForAudit(CassandraAuction row) => Of(row) with { IsSold = row.HighestBidAmount > 0 };
+
         /// <summary>Label names of the fields that differ (empty when equal).</summary>
         public static IReadOnlyList<string> Compare(Fingerprint archived, Fingerprint scylla)
         {
@@ -54,6 +69,9 @@ namespace Coflnet.Sky.Auctions.Archive
         public static readonly Guid UnknownBidProfile = Guid.Parse("00000000-0000-0000-0000-000000000001");
 
         private static readonly byte[] EmptyBids = MessagePack.MessagePackSerializer.Serialize(new List<CassandraBid>());
+
+        /// <summary>True when the row says MariaDB rows of the tag-month/month were deleted (<c>deleted_at</c> set or <c>deleted_rows &gt; 0</c>).</summary>
+        public static bool IsDeleted(ArchivedMonth row) => row != null && (row.DeletedAt != null || row.DeletedRows > 0);
 
         /// <summary>UTC; Unspecified (as the driver may return it) is taken as UTC.</summary>
         public static DateTime ToUtc(DateTime value) => value.Kind switch
