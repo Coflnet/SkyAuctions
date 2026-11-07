@@ -64,19 +64,30 @@ public class SellsCollector : BackgroundService
         logger.LogInformation($"Finished completely");
         await Task.Delay(1000);
 
-        while (!stoppingToken.IsCancellationRequested)
-            await Kafka.KafkaConsumer.ConsumeBatch<SaveAuction>(
-                    config,
-                    new string[] { config["TOPICS:SOLD_AUCTION"], config["TOPICS:NEW_AUCTION"] },
-                    async ab =>
-                    {
-                        await InsertSells(ab);
-                        consumeCount.Inc(ab.Count());
-                    },
-                    stoppingToken,
-                    "sky-auctions",
-                    400
-            );
+        var backoff = new ConsumeBackoff();
+        await ConsumeRetryLoop.RunAsync(
+            () => ConsumeSells(backoff, stoppingToken),
+            backoff,
+            (e, wait) => logger.LogError(e, "sell consumption failed, retrying in {delay}", wait),
+            Task.Delay,
+            stoppingToken);
+    }
+
+    private Task ConsumeSells(ConsumeBackoff backoff, CancellationToken stoppingToken)
+    {
+        return Kafka.KafkaConsumer.ConsumeBatch<SaveAuction>(
+                config,
+                new string[] { config["TOPICS:SOLD_AUCTION"], config["TOPICS:NEW_AUCTION"] },
+                async ab =>
+                {
+                    await InsertSells(ab);
+                    consumeCount.Inc(ab.Count());
+                    backoff.Reset();
+                },
+                stoppingToken,
+                "sky-auctions",
+                400
+        );
     }
 
     private async Task MigrateToWeekly()
